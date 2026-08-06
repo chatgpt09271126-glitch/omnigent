@@ -95,4 +95,30 @@ describe("MessageResponse code-block copy", () => {
     });
     expect(screen.getByRole("button", { name: "Download file" })).toBeInTheDocument();
   });
+
+  it("opens the existing Streamdown code and line numbers in focus mode", async () => {
+    const { container } = render(
+      <MessageResponse>{"```ts\nconst value = 1;\nconsole.log(value);\n```"}</MessageResponse>,
+    );
+
+    const expand = await screen.findByRole("button", { name: "Open code focus mode" });
+    expect(screen.getByRole("button", { name: "Copy Code" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download file" })).toBeInTheDocument();
+    expect(
+      Array.from(expand.parentElement?.querySelectorAll("button") ?? []).map((button) =>
+        button.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Toggle word wrap", "Open code focus mode", "Copy Code"]);
+    const normalBody = container.querySelector('[data-streamdown="code-block-body"]');
+    expect(normalBody).toBeInTheDocument();
+
+    fireEvent.click(expand);
+
+    const dialog = screen.getByRole("dialog", { name: "Code focus mode" });
+    const focusedBody = dialog.querySelector('[data-streamdown="code-block-body"]');
+    expect(focusedBody).toBeInTheDocument();
+    expect(focusedBody).not.toBe(normalBody);
+    expect(focusedBody?.querySelectorAll("code > span")).toHaveLength(2);
+    expect(focusedBody?.textContent).toContain("const value = 1;");
+  });
 });

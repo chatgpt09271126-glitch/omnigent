@@ -183,6 +183,14 @@
     env(safe-area-inset-bottom, 0px),
     var(--omnigent-android-safe-area-bottom, 0px)
   );
+  --omnigent-safe-left: max(
+    env(safe-area-inset-left, 0px),
+    var(--omnigent-android-safe-area-left, 0px)
+  );
+  --omnigent-safe-right: max(
+    env(safe-area-inset-right, 0px),
+    var(--omnigent-android-safe-area-right, 0px)
+  );
   --omnigent-native-top-bar: 0px; /* set by native bridge (px) */
   --omnigent-native-bottom-bar: 0px; /* set by native bridge (px) */
   --omnigent-top-bar-visible: 0; /* web-owned 0|1 */
@@ -972,6 +980,84 @@ html:not(.dark) .conversations-sidebar {
 .chat-code-wrap [data-streamdown="code-block-body"] code > span {
   padding-left: 2.5rem;
   text-indent: -2.5rem;
+}
+
+/* The full-viewport reader reuses Streamdown's chat DOM. Zoom changes the
+ * actual code font size while the toolbar and Shiki text stay crisp. */
+.code-focus-viewer {
+  height: 100vh;
+  height: 100dvh;
+}
+.code-focus-toolbar {
+  padding-top: var(--omnigent-safe-top);
+  padding-left: var(--omnigent-safe-left);
+  padding-right: var(--omnigent-safe-right);
+}
+.code-focus-toolbar-scroll {
+  scrollbar-width: none;
+}
+.code-focus-toolbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+.code-focus-viewport {
+  padding-right: var(--omnigent-safe-right);
+  padding-bottom: var(--omnigent-safe-bottom);
+  padding-left: var(--omnigent-safe-left);
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  caret-color: transparent;
+  cursor: default;
+}
+.code-focus-content {
+  min-height: 100%;
+  min-width: 100%;
+  width: max-content;
+  font-size: var(--text-ui);
+}
+.code-focus-content [data-streamdown="code-block"] {
+  min-width: 100%;
+  width: max-content;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+}
+.code-focus-content [data-streamdown="code-block-header"],
+.code-focus-content [data-streamdown="code-block-actions"],
+.code-focus-content
+  [data-streamdown="code-block"]
+  > :has(> [data-streamdown="code-block-actions"]) {
+  display: none;
+}
+.code-focus-content [data-streamdown="code-block-body"] {
+  min-width: 100%;
+  width: max-content;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  font-size: calc(0.875em * var(--code-focus-zoom));
+}
+.code-focus-content [data-streamdown="code-block-body"] code > span::before {
+  width: calc(1.5rem * var(--code-focus-zoom));
+  margin-right: calc(1rem * var(--code-focus-zoom));
+  font-size: calc(13px * var(--code-focus-zoom));
+}
+.code-focus-wrap,
+.code-focus-wrap [data-streamdown="code-block"],
+.code-focus-wrap [data-streamdown="code-block-body"] {
+  width: 100%;
+}
+.code-focus-wrap [data-streamdown="code-block-body"] pre,
+.code-focus-wrap [data-streamdown="code-block-body"] code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.code-focus-wrap [data-streamdown="code-block-body"] code > span {
+  padding-left: calc(2.5rem * var(--code-focus-zoom));
+  text-indent: calc(-2.5rem * var(--code-focus-zoom));
 }
 
 /* Streamdown's <button> link-safety-modal variant and wrap-anywhere reset can

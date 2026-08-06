@@ -27,6 +27,7 @@ import {
   SECURE_STREAMDOWN_REHYPE_PLUGINS,
   STREAMDOWN_PLUGINS,
 } from "./streamdown-security";
+import { CodeFocusViewer } from "./CodeFocusViewer";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -416,6 +417,7 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
           self-arrange, so neither needs a hardcoded horizontal offset. */}
       <div className="absolute top-2 right-12 z-10 flex items-center gap-1">
         <ChatCodeBlockWrapToggle onToggle={toggleWrap} wrap={wrap} />
+        <CodeFocusViewer initialWrap={wrap} renderedCode={block} />
         <ChatCodeBlockCopyButton getCode={getCode} />
       </div>
     </div>
