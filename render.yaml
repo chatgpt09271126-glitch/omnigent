@@ -11,7 +11,7 @@ services:
       url: ghcr.io/omnigent-ai/omnigent-server:latest
       # While the package is private, add image.creds.fromRegistryCreds (a GHCR
       # read:packages token registered in the Render dashboard). Drop once public.
-    plan: starter
+    plan: free
     healthCheckPath: /health
     disk:
       name: artifact-data
@@ -47,6 +47,6 @@ services:
 
 databases:
   - name: omnigent-db
-    plan: basic-256mb
+    plan: free
     databaseName: omnigent
     user: omnigent
