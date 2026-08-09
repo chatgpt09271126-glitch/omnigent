@@ -6,7 +6,6 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "deploy/docker/Dockerfile"
-buildArgs = { OMNIGENT_EXTRAS = "s3" }
 
 [deploy]
 healthcheckPath = "/health"
