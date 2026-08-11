@@ -812,16 +812,18 @@ const MAX_TRANSIENT_404_RETRIES = 10;
 
 // Silent-stall watchdog for the session SSE stream. The server sends a
 // `session.heartbeat` byte every `_SESSION_STREAM_HEARTBEAT_INTERVAL_S`
-// (15s server-side) on an otherwise-idle stream specifically so something
+// (2s server-side) on an otherwise-idle stream specifically so something
 // crosses the wire regularly — but a mobile WebView can silently stall an
 // open `fetch()` when the OS throttles a backgrounded tab (bytes stop
 // arriving, the socket never closes, no error fires), which neither a
 // read-timeout nor `request.is_disconnected()` catches for minutes. This
-// tolerates one missed heartbeat tick before forcing a reconnect; the
-// pump's "dropped" ending already reconnects near-instantly (no backoff),
-// so a false-positive trip is cheap.
-const STREAM_WATCHDOG_TIMEOUT_MS = 20_000;
-const STREAM_WATCHDOG_CHECK_INTERVAL_MS = 5_000;
+// tolerates a few missed heartbeat ticks (rather than just one) before
+// forcing a reconnect, since a 2s cadence makes a single missed tick from
+// ordinary network jitter much likelier than it was at the old 15s cadence;
+// the pump's "dropped" ending already reconnects near-instantly (no
+// backoff), so a false-positive trip is cheap regardless.
+const STREAM_WATCHDOG_TIMEOUT_MS = 8_000;
+const STREAM_WATCHDOG_CHECK_INTERVAL_MS = 2_000;
 
 // Sticky picker prefs — persisted so a new chat inherits the user's
 // last pick across reloads and across sessions.
@@ -3807,7 +3809,7 @@ export async function pumpStreamEvents(
   const sseResult: SseStreamResult = { sawDone: false };
 
   // Silent-stall watchdog: tap every chunk (including the bytes carrying a
-  // `session.heartbeat`, sent every 15s server-side on an otherwise-idle
+  // `session.heartbeat`, sent every 2s server-side on an otherwise-idle
   // stream) to track when anything last crossed the wire, and force-cancel
   // the stream once it goes quiet well past that cadence. This is aimed at
   // a mobile WebView silently stalling a backgrounded `fetch()` — bytes

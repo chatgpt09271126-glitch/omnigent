@@ -7245,7 +7245,11 @@ async def _stream_live_events(
     ``request.is_disconnected()`` check (only polled on event
     arrival) both lag for minutes after a half-open socket forms
     (e.g. after a laptop sleep). The heartbeat gives both sides a
-    regular byte to fire against.
+    regular byte to fire against — and, since some intermediary
+    proxies only flush buffered response bytes on a write (not per
+    logical SSE event), a short interval also bounds how long a real
+    event can sit stuck behind proxy buffering before the next
+    heartbeat's write forces it through.
 
     :param request: The FastAPI request, used to detect disconnect.
     :param session_id: Session/conversation identifier whose stream

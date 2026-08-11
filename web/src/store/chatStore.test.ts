@@ -6983,7 +6983,18 @@ describe("chatStore — startStreamPump reconnect loop", () => {
     });
 
     const loop = startStreamPump("conv_404flap", controller, setState, getState);
-    await vi.advanceTimersByTimeAsync(20_000);
+    // Advance in small steps, feeding a heartbeat byte once the real
+    // connection is open (mirroring the server's periodic
+    // `session.heartbeat`) so the silent-stall watchdog doesn't mistake
+    // this deliberately-idle-but-healthy stream for a stall.
+    /* oxlint-disable no-await-in-loop */
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(1000);
+      if (sinks.length > 0) {
+        sinks[0]!.push('data: {"type":"session.heartbeat"}\n\n');
+      }
+    }
+    /* oxlint-enable no-await-in-loop */
 
     expect(opens).toBe(4);
     expect(sinks).toHaveLength(1);

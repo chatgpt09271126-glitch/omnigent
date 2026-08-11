@@ -1689,9 +1689,14 @@ def register_events_routes(
                 # Keep intermediaries from buffering the SSE stream:
                 # ``X-Accel-Buffering: no`` disables nginx-style response
                 # buffering so heartbeats and deltas reach the client as
-                # they're written (a buffered proxy can delay the 15s
+                # they're written (a buffered proxy can delay the
                 # heartbeat past a client/idle timeout), and ``no-cache``
                 # keeps the long-lived response out of any shared cache.
+                # Some ingress proxies don't honor this header at all and
+                # buffer regardless — ``_SESSION_STREAM_HEARTBEAT_INTERVAL_S``
+                # is kept short specifically so any such buffering only
+                # holds a real event for a couple seconds at most before
+                # the next heartbeat's write forces a flush.
                 # NOTE: this does NOT defeat the Databricks Apps ingress'
                 # hard ~5-min HTTP/2 stream-duration cap — that drop is
                 # handled by the client's transparent reconnect.
