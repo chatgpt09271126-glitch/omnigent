@@ -6047,6 +6047,43 @@ describe("chatStore — bindStream sticky-pref handoff", () => {
   });
 });
 
+describe("chatStore — session status reconciled when the tab returns visible", () => {
+  afterEach(() => {
+    delete (document as { visibilityState?: unknown }).visibilityState;
+  });
+
+  it("clears a stuck Working indicator once the tab is visible again and the snapshot reports idle", async () => {
+    // Regression: a backgrounded tab can silently miss the terminal
+    // `session_status` SSE edge (the same browser-throttling class of loss
+    // `reconcilePendingElicitations` already recovers from for approval
+    // cards), leaving `sessionStatus` stuck at "running" and "Working…"
+    // lit forever until a manual reload. Returning to the tab must
+    // reconcile against a fresh snapshot the same way.
+    seedSession("conv_vis", []);
+    await useChatStore.getState().switchTo("conv_vis");
+
+    // Simulate the missed idle edge: the server-side turn actually
+    // finished (the default snapshot handler always serves `status:
+    // "idle"`), but the client's local state never heard about it.
+    useChatStore.setState({
+      sessionStatus: "running",
+      status: "streaming",
+      activeResponse: { responseId: "resp_missed", state: "streaming", error: null },
+    });
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await tick();
+
+    const state = useChatStore.getState();
+    expect(state.sessionStatus).toBe("idle");
+    expect(state.activeResponse?.state).toBe("completed");
+  });
+});
+
 describe("chatStore — pumpStreamEvents frame batching", () => {
   /** A 35-char delta (> the reducer's 30-char flush threshold) so each
    * one flushes exactly one text_chunk; `marker` makes chunks orderable. */
@@ -6702,6 +6739,35 @@ describe("chatStore — pumpStreamEvents end reasons", () => {
     sink.close();
     // Bare close (idle proxy FIN) reads as a transport drop → reconnectable.
     expect(await done).toBe("dropped");
+  });
+
+  it("returns 'dropped' once the silent-stall watchdog trips (no bytes, no error, no close)", async () => {
+    // Regression: a mobile WebView can silently stall a backgrounded
+    // `fetch()` — the socket never closes and no error fires, so nothing
+    // else here would ever notice a dead connection, stranding the
+    // "Working…" indicator until a manual reload. The watchdog force-
+    // cancels the body once it goes quiet past its timeout; that surfaces
+    // as an ordinary 'dropped' ending, which the caller's reconnect loop
+    // re-subscribes to and re-syncs `sessionStatus` from a fresh snapshot.
+    vi.useFakeTimers();
+    try {
+      useChatStore.setState({ conversationId: "conv_stall", blocks: [] });
+      const sink = pushableStream();
+      const done = pumpStreamEvents(
+        "conv_stall",
+        sink.stream,
+        new AbortController(),
+        setState,
+        getState,
+        immediate,
+      );
+      // No bytes ever arrive — not even a heartbeat — so activity never
+      // resets; advance well past the watchdog's timeout.
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(await done).toBe("dropped");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns 'dropped' when the stream errors (e.g. net::ERR_HTTP2_PROTOCOL_ERROR)", async () => {

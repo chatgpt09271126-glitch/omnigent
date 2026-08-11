@@ -810,6 +810,19 @@ const STREAM_RECONNECT_MAX_MS = 5_000;
 // gives up rather than polling it forever.
 const MAX_TRANSIENT_404_RETRIES = 10;
 
+// Silent-stall watchdog for the session SSE stream. The server sends a
+// `session.heartbeat` byte every `_SESSION_STREAM_HEARTBEAT_INTERVAL_S`
+// (15s server-side) on an otherwise-idle stream specifically so something
+// crosses the wire regularly — but a mobile WebView can silently stall an
+// open `fetch()` when the OS throttles a backgrounded tab (bytes stop
+// arriving, the socket never closes, no error fires), which neither a
+// read-timeout nor `request.is_disconnected()` catches for minutes. This
+// tolerates one missed heartbeat tick before forcing a reconnect; the
+// pump's "dropped" ending already reconnects near-instantly (no backoff),
+// so a false-positive trip is cheap.
+const STREAM_WATCHDOG_TIMEOUT_MS = 20_000;
+const STREAM_WATCHDOG_CHECK_INTERVAL_MS = 5_000;
+
 // Sticky picker prefs — persisted so a new chat inherits the user's
 // last pick across reloads and across sessions.
 const PICKER_PREF_EFFORT_KEY = "omnigent.picker.effort";
@@ -1913,7 +1926,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // broadcast it triggers), with rollback on failure.
     set({
       flaggedResponses: flagged
-        ? { ...previous, [responseId]: { flaggedBy: null, flaggedAt: Math.floor(Date.now() / 1000) } }
+        ? {
+            ...previous,
+            [responseId]: { flaggedBy: null, flaggedAt: Math.floor(Date.now() / 1000) },
+          }
         : Object.fromEntries(Object.entries(previous).filter(([id]) => id !== responseId)),
     });
     try {
@@ -2244,6 +2260,39 @@ async function reconcilePendingElicitations(id: string): Promise<void> {
 }
 
 /**
+ * Reconcile the main session's own status (`sessionStatus`/`activeResponse`/
+ * `backgroundTaskCount` — everything the "Working…" indicator reads) against
+ * a fresh snapshot.
+ *
+ * The live SSE stream is the only source for these fields; unlike a hard
+ * connection drop (which the reconnect loop already resyncs via
+ * `reconnectStatusPatch`), a background tab can silently miss a single
+ * terminal `session_status` edge to browser throttling without the
+ * connection ever erroring — the same loss class
+ * `reconcilePendingElicitations` recovers from for approval cards. Reuses
+ * `reconnectStatusPatch` so a missed idle/waiting/failed edge (or a missed
+ * turn-start running edge) is corrected identically to a real reconnect.
+ *
+ * @param id - Conversation/session id to reconcile.
+ */
+async function reconcileSessionStatus(id: string): Promise<void> {
+  if (queryClient === null) return;
+  let session: Session;
+  try {
+    session = await queryClient.fetchQuery({
+      queryKey: ["session", id],
+      queryFn: () => getSessionSlim(id),
+      staleTime: 0,
+      retry: false,
+    });
+  } catch {
+    return;
+  }
+  if (useChatStore.getState().conversationId !== id) return;
+  useChatStore.setState((s) => reconnectStatusPatch(session, s));
+}
+
+/**
  * Store fields derived from the session's agent binding, computed from a
  * session snapshot.
  *
@@ -2372,12 +2421,16 @@ async function bindStream(
   // Background tabs can miss the `response.elicitation_resolved` SSE event
   // (browser throttling), so a pending ApprovalCard that was answered on
   // another surface (e.g. the native-terminal popup) would stay stuck until
-  // a refresh. When the tab becomes visible again, reconcile against a fresh
-  // snapshot so any no-longer-pending card flips to resolved. Removed when
+  // a refresh. The session-level `session_status` edge (idle/waiting/failed)
+  // that clears "Working…" can be dropped the same way. When the tab becomes
+  // visible again, reconcile both against a fresh snapshot. Removed when
   // the stream unbinds (abort), so it never leaks across conversations.
   if (typeof document !== "undefined") {
     const onVisible = (): void => {
-      if (document.visibilityState === "visible") void reconcilePendingElicitations(id);
+      if (document.visibilityState === "visible") {
+        void reconcilePendingElicitations(id);
+        void reconcileSessionStatus(id);
+      }
     };
     document.addEventListener("visibilitychange", onVisible);
     controller.signal.addEventListener("abort", () => {
@@ -2822,6 +2875,14 @@ function reconnectStatusPatch(session: Session, s: ChatState): Partial<ChatState
   // Recover the background-shell tally across the gap too, so the spinner
   // returns to "N background tasks still running" rather than vanishing on reconnect.
   patch.backgroundTaskCount = session.backgroundTaskCount ?? 0;
+  // `response.flagged`/`session.ui_settings` have no replay either (like
+  // elicitations, only the live SSE edge carries them) — a flag toggled
+  // while this client's connection was gapped would otherwise stay stale
+  // until a full page reload re-hydrates from the snapshot. Recover both
+  // here so every reconnect path (idle-cap recycle, presence flip, the
+  // stall watchdog) resyncs them, not just the initial bind.
+  patch.uiSettings = session.uiSettings ?? {};
+  patch.flaggedResponses = session.flaggedResponses ?? {};
   if (session.contextWindow != null) patch.contextWindow = session.contextWindow;
   if (session.lastTotalTokens != null) patch.tokensUsed = session.lastTotalTokens;
   if (session.totalCostUsd != null) patch.sessionCostUsd = session.totalCostUsd;
@@ -3744,7 +3805,44 @@ export async function pumpStreamEvents(
 ): Promise<StreamEndReason> {
   const stream = new BlockStream();
   const sseResult: SseStreamResult = { sawDone: false };
-  const rawEvents = parseSseStream(body, sseResult);
+
+  // Silent-stall watchdog: tap every chunk (including the bytes carrying a
+  // `session.heartbeat`, sent every 15s server-side on an otherwise-idle
+  // stream) to track when anything last crossed the wire, and force-cancel
+  // the stream once it goes quiet well past that cadence. This is aimed at
+  // a mobile WebView silently stalling a backgrounded `fetch()` — bytes
+  // stop arriving but the socket never closes and no error fires, so
+  // nothing else here would ever notice. Cancelling surfaces as a normal
+  // "dropped" ending below, which the caller's reconnect loop re-subscribes
+  // to near-instantly.
+  // Own the only reader on `body` directly (rather than `pipeThrough`,
+  // whose output `parseSseStream` locks with its own reader) so the
+  // watchdog can cancel it without hitting the "stream already locked"
+  // rejection a stream-level `.cancel()` would throw once a consumer
+  // holds a reader.
+  let lastActivityAt = Date.now();
+  const bodyReader = body.getReader();
+  const watchedBody = new ReadableStream<Uint8Array>({
+    async pull(ctrl) {
+      const { done, value } = await bodyReader.read();
+      if (done) {
+        ctrl.close();
+        return;
+      }
+      lastActivityAt = Date.now();
+      ctrl.enqueue(value);
+    },
+    cancel(reason) {
+      return bodyReader.cancel(reason);
+    },
+  });
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastActivityAt >= STREAM_WATCHDOG_TIMEOUT_MS) {
+      void bodyReader.cancel("stream-watchdog-stall").catch(() => {});
+    }
+  }, STREAM_WATCHDOG_CHECK_INTERVAL_MS);
+
+  const rawEvents = parseSseStream(watchedBody, sseResult);
   // Tap the raw event stream for `session.*` side effects (sessionStatus,
   // pending-message promotion, interrupted decoration) before handing it
   // to the BlockStream reducer. The reducer is intentionally pure
@@ -4012,6 +4110,7 @@ export async function pumpStreamEvents(
     // can't apply this stream's blocks after switchTo bound another.
     // `abortController` lifecycle is owned by `startStreamPump`'s loop,
     // not here — it must survive across reconnect attempts.
+    clearInterval(watchdog);
     scheduler.cancel();
     buffer.length = 0;
   }
@@ -4319,7 +4418,10 @@ export function handleSessionEvent(event: StreamEvent): void {
         flaggedResponses: event.flagged
           ? {
               ...state.flaggedResponses,
-              [event.responseId]: { flaggedBy: event.flaggedBy ?? null, flaggedAt: event.flaggedAt },
+              [event.responseId]: {
+                flaggedBy: event.flaggedBy ?? null,
+                flaggedAt: event.flaggedAt,
+              },
             }
           : Object.fromEntries(
               Object.entries(state.flaggedResponses).filter(([id]) => id !== event.responseId),
