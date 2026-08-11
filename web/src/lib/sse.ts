@@ -50,6 +50,8 @@ import type {
   SessionModelEvent,
   SessionCollaborationModeEvent,
   SessionReasoningEffortEvent,
+  SessionUiSettingsEvent,
+  ResponseFlaggedEvent,
   SessionAgentChangedEvent,
   SessionTodosEvent,
   SessionSandboxStatusEvent,
@@ -545,6 +547,37 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
       conversationId,
       mode,
     } satisfies SessionCollaborationModeEvent;
+  }
+  if (eventType === "session.ui_settings") {
+    const conversationId = data.conversation_id;
+    if (typeof conversationId !== "string" || !conversationId) return null;
+    const uiSettings = data.ui_settings;
+    if (typeof uiSettings !== "object" || uiSettings === null) return null;
+    return {
+      type: "session_ui_settings",
+      conversationId,
+      uiSettings: uiSettings as Record<string, boolean>,
+    } satisfies SessionUiSettingsEvent;
+  }
+  if (eventType === "response.flagged") {
+    const conversationId = data.conversation_id;
+    if (typeof conversationId !== "string" || !conversationId) return null;
+    const responseId = data.response_id;
+    if (typeof responseId !== "string" || !responseId) return null;
+    const flagged = data.flagged;
+    if (typeof flagged !== "boolean") return null;
+    const flaggedAt = data.flagged_at;
+    if (typeof flaggedAt !== "number") return null;
+    const flaggedBy = data.flagged_by;
+    if (flaggedBy !== null && flaggedBy !== undefined && typeof flaggedBy !== "string") return null;
+    return {
+      type: "response_flagged",
+      conversationId,
+      responseId,
+      flagged,
+      flaggedBy: flaggedBy ?? null,
+      flaggedAt,
+    } satisfies ResponseFlaggedEvent;
   }
   if (eventType === "session.agent_changed") {
     const conversationId = data.conversation_id;

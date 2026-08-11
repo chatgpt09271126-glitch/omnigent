@@ -305,6 +305,7 @@ from omnigent.server.schemas import (
     ElicitationRequestParams,
     ElicitationResult,
     ErrorDetail,
+    FlaggedResponseInfo,
     NativeModelOption,
     SessionCreateMetadata,
     SessionCreateRequest,
@@ -330,6 +331,7 @@ from omnigent.stores.artifact_store import ArtifactStore
 from omnigent.stores.conversation_store import (
     PINNED_LABEL_KEY,
     ConversationNotFoundError,
+    ResponseFlag,
     pinned_label_key,
 )
 from omnigent.stores.file_store import FileStore
@@ -935,6 +937,7 @@ def _build_session_response(
     subtree_usage: dict[str, Any] | None = None,
     model_options: list[dict[str, Any]] | None = None,
     viewer_id: str | None = None,
+    flagged_responses: dict[str, ResponseFlag] | None = None,
 ) -> SessionResponse:
     """
     Build a :class:`SessionResponse` from store-side entities.
@@ -1003,6 +1006,8 @@ def _build_session_response(
     :param model_options: Runner-owned native model picker options,
         e.g. ``[{"id": "gpt-5.5", "displayName": "GPT-5.5"}]``.
         ``None`` is treated as ``[]``.
+    :param flagged_responses: Operator-flagged responses for this session,
+        keyed by ``response_id``. ``None`` is treated as ``{}``.
     :returns: The :class:`SessionResponse` for the API.
     :raises OmnigentError: If ``conv.agent_id`` is ``None``.
     """
@@ -1118,6 +1123,13 @@ def _build_session_response(
         # sessions whose forwarder stamps a turn id; ``None`` otherwise.
         active_response_id=_session_active_response_cache.get(conv.id),
         project_id=conv.project_id,
+        ui_settings=conv.ui_settings,
+        flagged_responses={
+            response_id: FlaggedResponseInfo(
+                flagged_by=flag.flagged_by, flagged_at=flag.flagged_at
+            )
+            for response_id, flag in (flagged_responses or {}).items()
+        },
     )
 
 
@@ -8490,6 +8502,7 @@ async def _get_session_snapshot(
         host_for_resume = await asyncio.to_thread(host_store.get_host, conv.host_id)
         if host_for_resume is not None:
             host_resumable = host_resume_supported(host_for_resume, sandbox_config)
+    flagged_responses = await asyncio.to_thread(conv_store.list_response_flags, conv.id)
     return _build_session_response(
         conv,
         items,
@@ -8514,6 +8527,7 @@ async def _get_session_snapshot(
         ),
         subtree_usage=subtree_usage,
         viewer_id=viewer_id,
+        flagged_responses=flagged_responses,
     )
 
 

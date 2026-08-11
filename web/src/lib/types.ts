@@ -461,6 +461,17 @@ export interface Session {
    * native-terminal sessions (claude-native) populate it.
    */
   activeResponseId?: string | null;
+  /**
+   * Per-thread UI feature toggles, e.g. `{"response_flagging": true}`.
+   * Empty object when none are set. Absent keys default to off.
+   */
+  uiSettings?: Record<string, boolean>;
+  /**
+   * Flagged responses (turns) at snapshot time, keyed by `responseId`.
+   * Hydrates the operator's live `response.flagged` highlight for a
+   * client opening the thread fresh, not just live.
+   */
+  flaggedResponses?: Record<string, { flaggedBy: string | null; flaggedAt: number }>;
 }
 
 /**

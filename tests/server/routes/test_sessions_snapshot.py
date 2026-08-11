@@ -139,6 +139,11 @@ class _ConversationStore:
             has_more=False,
         )
 
+    def list_response_flags(self, conversation_id: str) -> dict[str, object]:
+        """No flags set for any conversation in these snapshot tests."""
+        del conversation_id
+        return {}
+
     def list_items(
         self,
         *,

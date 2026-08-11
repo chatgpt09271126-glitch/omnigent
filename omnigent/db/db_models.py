@@ -779,6 +779,12 @@ class SqlConversation(ConversationBase):
         overrides (reasoning_effort, model_override,
         cost_control_mode_override, harness_override). ``None`` when the
         session uses all agent/spec defaults.
+    :param ui_settings: Compact JSON blob of per-session client-UI feature
+        toggles (e.g. ``{"response_flagging": true}``). ``None`` when no
+        toggle has ever been set for this session; a client should treat a
+        missing key as off. Separate from ``session_overrides`` (runtime
+        config) and ``conversation_labels`` (policy-engine labels) — this
+        blob is purely presentational and never read by the runtime.
     """
 
     __tablename__ = "conversations"
@@ -816,6 +822,11 @@ class SqlConversation(ConversationBase):
     # set keys are stored. Never filtered in SQL — read and written whole with
     # the row (see the store's _encode/_decode_session_overrides).
     session_overrides: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Per-session client-UI feature toggles packed as a compact JSON object,
+    # e.g. ``{"response_flagging": true}``. NULL when no toggle has ever been
+    # set. Written with read-modify-write merge semantics (see the store's
+    # update_conversation) so flipping one toggle never clobbers another.
+    ui_settings: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Whether the session is archived (hidden from the default sidebar). Lives
     # here on the AP table so list_conversations can filter it inline alongside
     # the created_at/updated_at sort keys, instead of pre-fetching ids from the
@@ -1016,6 +1027,47 @@ class SqlConversationLabel(ConversationBase):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str] = mapped_column(String(LABEL_VALUE_MAX_LEN))
     updated_at: Mapped[int] = mapped_column(Integer)
+
+
+class SqlResponseFlag(ConversationBase):
+    """
+    SQLAlchemy model for the ``response_flags`` table.
+
+    One sparse row per operator-flagged response (turn) — a response with
+    no row is unflagged. Keyed by ``response_id`` rather than any
+    ``conversation_items`` row so an operator can flag a response while it
+    is still streaming, before any item for that turn has been persisted.
+    Deleting the row unflags the response (no separate "flagged" boolean).
+
+    :param conversation_id: The conversation this flag belongs to.
+        Composite PK member. Deleted with the conversation (explicit
+        cleanup in ``delete_conversation``, no DB-level cascade).
+    :param response_id: The flagged turn's response id, e.g.
+        ``"resp_xyz789"``. Composite PK member.
+    :param flagged_by: Identity of the user who set the flag, e.g.
+        ``"alice@example.com"``. ``NULL`` in single-user mode (mirrors
+        ``SqlComment.created_by``: the reserved single-user sentinel is
+        dropped rather than stored as a fake "actor").
+    :param flagged_at: Unix epoch seconds when the flag was set.
+    """
+
+    __tablename__ = "response_flags"
+
+    # Tenant partition key: Databricks workspace id owning this row (0 = default). Part of the PK.
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        Uuid16(),
+        primary_key=True,
+    )
+    response_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    flagged_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    flagged_at: Mapped[int] = mapped_column(Integer)
 
 
 class SqlComment(OmnigentBase):

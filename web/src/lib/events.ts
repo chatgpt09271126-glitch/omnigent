@@ -535,6 +535,36 @@ export interface SessionCollaborationModeEvent {
 }
 
 /**
+ * `session.ui_settings` — per-thread UI feature toggles changed.
+ *
+ * Emitted after a `PATCH /v1/sessions/{id}` carrying `ui_settings`. Carries
+ * the full merged map (not a delta), so every connected viewer — including
+ * a read-only reader — can replace its cached copy wholesale.
+ */
+export interface SessionUiSettingsEvent {
+  type: "session_ui_settings";
+  conversationId: string;
+  uiSettings: Record<string, boolean>;
+}
+
+/**
+ * `response.flagged` — an operator flagged or cleared a response (turn).
+ *
+ * Emitted by `POST /v1/sessions/{id}/responses/{responseId}/flag`. Works
+ * mid-stream: `responseId` is allocated at turn start (see
+ * `response_created`), before any item is persisted, so the assistant
+ * bubble can already be keyed on it when this event arrives.
+ */
+export interface ResponseFlaggedEvent {
+  type: "response_flagged";
+  conversationId: string;
+  responseId: string;
+  flagged: boolean;
+  flaggedBy?: string | null;
+  flaggedAt: number;
+}
+
+/**
  * `session.agent_changed` — the session's bound agent was switched in
  * place (switch-agent route).
  *
@@ -894,6 +924,8 @@ export type StreamEvent =
   | SessionModelEvent
   | SessionReasoningEffortEvent
   | SessionCollaborationModeEvent
+  | SessionUiSettingsEvent
+  | ResponseFlaggedEvent
   | SessionAgentChangedEvent
   | SessionTodosEvent
   | SessionTerminalPendingEvent

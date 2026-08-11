@@ -35,6 +35,7 @@ from omnigent.db.db_models import (
     SqlConversationMetadata,
     SqlPolicy,
     SqlProject,
+    SqlResponseFlag,
     SqlSessionPermission,
     SqlUserDailyCost,
     current_workspace_id,
@@ -71,6 +72,7 @@ from omnigent.entities import (
     ConversationItem,
     NewConversationItem,
     PagedList,
+    ResponseFlag,
     parse_item_data,
 )
 from omnigent.session_import.models import (
@@ -144,6 +146,28 @@ def _decode_session_overrides(raw: str | None) -> dict[str, str | None]:
     return {key: data.get(key) for key in _SESSION_OVERRIDE_KEYS}
 
 
+def _encode_ui_settings(settings: dict[str, bool]) -> str | None:
+    """Pack per-session UI feature toggles into a compact JSON blob.
+
+    Unlike :func:`_encode_session_overrides`, keys are not restricted to a
+    fixed set — any client-defined toggle name is accepted, since this blob
+    is purely presentational and never interpreted by the runtime.
+
+    :param settings: Mapping of toggle name to on/off state.
+    :returns: Compact JSON object string, or ``None`` when *settings* is empty.
+    """
+    return json.dumps(settings, separators=(",", ":")) if settings else None
+
+
+def _decode_ui_settings(raw: str | None) -> dict[str, bool]:
+    """Unpack the ``ui_settings`` blob to a toggle-name -> bool dict.
+
+    :param raw: The stored JSON blob, or ``None``.
+    :returns: Dict of toggle name to on/off state; empty when *raw* is ``None``.
+    """
+    return json.loads(raw) if raw else {}
+
+
 def _to_conversation(
     row: SqlConversation,
     meta: SqlConversationMetadata | None = None,
@@ -177,6 +201,7 @@ def _to_conversation(
     if meta and meta.session_usage:
         session_usage = json.loads(meta.session_usage)
     overrides = _decode_session_overrides(row.session_overrides)
+    ui_settings = _decode_ui_settings(row.ui_settings)
     return Conversation(
         id=row.id,
         created_at=row.created_at,
@@ -200,6 +225,7 @@ def _to_conversation(
         cost_control_mode_override=overrides["cost_control_mode_override"],
         subagent_routing_override=overrides["subagent_routing_override"],
         harness_override=overrides["harness_override"],
+        ui_settings=ui_settings,
         sub_agent_name=meta.sub_agent_name if meta else None,
         external_session_id=meta.external_session_id if meta else None,
         # NULL → None; a stored JSON array (e.g. ``"[]"`` or
@@ -2167,6 +2193,81 @@ class SqlAlchemyConversationStore(ConversationStore):
                 )
             )
 
+    def set_response_flag(
+        self,
+        conversation_id: str,
+        response_id: str,
+        flagged: bool,
+        flagged_by: str | None,
+        at: int | None = None,
+    ) -> None:
+        """
+        Set or clear an operator flag on a response (turn).
+
+        A plain get-then-add/update/delete rather than a dialect-aware
+        UPSERT (unlike ``set_labels``) — flags are single-row, low-contention
+        writes (one operator flagging one turn), so the batched-atomicity
+        machinery labels need isn't worth the complexity here.
+
+        :param conversation_id: Owning conversation, e.g. ``"conv_abc123"``.
+        :param response_id: The turn's response id, e.g. ``"resp_xyz789"``.
+        :param flagged: ``True`` to set the flag, ``False`` to clear it.
+        :param flagged_by: Identity of the user who flagged/unflagged.
+            ``None`` in single-user mode (mirrors comment attribution).
+        :param at: Unix epoch seconds to stamp. ``None`` → current time.
+        """
+        stamp = at if at is not None else now_epoch()
+        with self._conv_session("set_response_flag") as session:
+            key = (current_workspace_id(), conversation_id, response_id)
+            row = session.get(SqlResponseFlag, key)
+            if not flagged:
+                if row is not None:
+                    session.delete(row)
+                return
+            if row is None:
+                session.add(
+                    SqlResponseFlag(
+                        conversation_id=conversation_id,
+                        response_id=response_id,
+                        flagged_by=flagged_by,
+                        flagged_at=stamp,
+                    )
+                )
+            else:
+                row.flagged_by = flagged_by
+                row.flagged_at = stamp
+
+    def list_response_flags(
+        self,
+        conversation_id: str,
+    ) -> dict[str, ResponseFlag]:
+        """
+        Return every flagged response in a conversation.
+
+        :param conversation_id: The conversation to query, e.g.
+            ``"conv_abc123"``.
+        :returns: Mapping of ``response_id`` to :class:`ResponseFlag`.
+        """
+        with self._conv_session("list_response_flags") as session:
+            rows = (
+                session.execute(
+                    select(
+                        SqlResponseFlag.response_id,
+                        SqlResponseFlag.flagged_by,
+                        SqlResponseFlag.flagged_at,
+                    ).where(
+                        SqlResponseFlag.workspace_id == current_workspace_id(),
+                        SqlResponseFlag.conversation_id == conversation_id,
+                    )
+                )
+                .tuples()
+                .all()
+            )
+            return {
+                response_id: ResponseFlag(flagged_by=flagged_by, flagged_at=flagged_at)
+                for response_id, flagged_by, flagged_at in rows
+            }
+
     def list_conversations(
         self,
         limit: int = 20,
@@ -2636,6 +2737,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         _unset_harness_override: bool = False,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
+        ui_settings: dict[str, bool] | None = None,
     ) -> Conversation | None:
         """
         Update mutable fields on a conversation.
@@ -2673,6 +2775,12 @@ class SqlAlchemyConversationStore(ConversationStore):
             append). JSON-encoded into the column.
         :param archived: New archived state. ``True`` archives,
             ``False`` unarchives, ``None`` leaves unchanged.
+        :param ui_settings: Per-session client-UI toggles to merge into the
+            stored blob, e.g. ``{"response_flagging": True}``. Merges with
+            (does not replace) any existing toggles; ``None`` leaves
+            unchanged. Set a key to ``False`` to turn a toggle off — there
+            is no separate unset flag, since ``False`` and "unset" are
+            equivalent from a reader's perspective.
         :returns: The updated :class:`Conversation`, or ``None``
             if the conversation does not exist.
         """
@@ -2727,6 +2835,13 @@ class SqlAlchemyConversationStore(ConversationStore):
             if archived is not None:
                 # archived lives on the AP conversations row; a visible state change.
                 row.archived = archived
+                ap_changed = True
+            if ui_settings:
+                # Merge, not replace — flipping one toggle must not clobber
+                # another concurrently-set toggle stored in the same blob.
+                merged_ui_settings = _decode_ui_settings(row.ui_settings)
+                merged_ui_settings.update(ui_settings)
+                row.ui_settings = _encode_ui_settings(merged_ui_settings)
                 ap_changed = True
             if ap_changed:
                 row.updated_at = now
@@ -3831,8 +3946,9 @@ class SqlAlchemyConversationStore(ConversationStore):
 
         Collects the full subtree of conversation IDs (the target plus
         all direct/indirect children), then deletes their items, labels,
-        comments, policies, and session-permission rows before deleting
-        the conversation rows themselves (children before parent).
+        response flags, comments, policies, and session-permission rows
+        before deleting the conversation rows themselves (children before
+        parent).
 
         :param conversation_id: Unique conversation identifier,
             e.g. ``"conv_abc123"``.
@@ -3905,6 +4021,12 @@ class SqlAlchemyConversationStore(ConversationStore):
                 delete(SqlConversationLabel).where(
                     SqlConversationLabel.workspace_id == current_workspace_id(),
                     SqlConversationLabel.conversation_id.in_(subtree_ids),
+                )
+            )
+            ap_sess.execute(
+                delete(SqlResponseFlag).where(
+                    SqlResponseFlag.workspace_id == current_workspace_id(),
+                    SqlResponseFlag.conversation_id.in_(subtree_ids),
                 )
             )
             ap_sess.execute(

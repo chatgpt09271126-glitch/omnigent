@@ -12,6 +12,7 @@ from omnigent.entities import (
     ConversationItem,
     NewConversationItem,
     PagedList,
+    ResponseFlag,
 )
 from omnigent.session_import import IMPORT_PROVENANCE_LABEL_KEYS
 
@@ -769,6 +770,7 @@ class ConversationStore(ABC):
         _unset_harness_override: bool = False,
         terminal_launch_args: list[str] | None = None,
         archived: bool | None = None,
+        ui_settings: dict[str, bool] | None = None,
     ) -> Conversation | None:
         """
         Update mutable fields on a conversation.
@@ -819,6 +821,9 @@ class ConversationStore(ABC):
         :param archived: New archived state. ``True`` archives
             (hides from the default listing), ``False`` unarchives,
             ``None`` leaves unchanged.
+        :param ui_settings: Per-session client-UI toggles to merge into the
+            stored blob, e.g. ``{"response_flagging": True}``. Merges with
+            (does not replace) existing toggles; ``None`` leaves unchanged.
         :returns: The updated :class:`Conversation`, or ``None``
             if the conversation does not exist.
         """
@@ -903,6 +908,54 @@ class ConversationStore(ABC):
         :param conversation_id: The conversation to update,
             e.g. ``"conv_abc123"``.
         :param key: The label key to remove, e.g. ``"omni_project"``.
+        """
+        ...
+
+    @abstractmethod
+    def set_response_flag(
+        self,
+        conversation_id: str,
+        response_id: str,
+        flagged: bool,
+        flagged_by: str | None,
+        at: int | None = None,
+    ) -> None:
+        """
+        Set or clear an operator flag on a response (turn).
+
+        Idempotent: flagging an already-flagged response overwrites the
+        ``flagged_by``/``at`` stamp; clearing an unflagged response is a
+        no-op. Deliberately independent of ``conversation_items`` — the
+        turn's items may not exist yet when this is called (an operator can
+        flag a response while it is still streaming, before any item for it
+        has been persisted).
+
+        :param conversation_id: Owning conversation, e.g. ``"conv_abc123"``.
+        :param response_id: The turn's response id, e.g. ``"resp_xyz789"``.
+        :param flagged: ``True`` to set the flag, ``False`` to clear it.
+        :param flagged_by: Identity of the user who flagged/unflagged, e.g.
+            ``"alice@example.com"``. ``None`` in single-user mode.
+        :param at: Unix epoch seconds to stamp. ``None`` (default) → the
+            store records the current time.
+        """
+        ...
+
+    @abstractmethod
+    def list_response_flags(
+        self,
+        conversation_id: str,
+    ) -> dict[str, ResponseFlag]:
+        """
+        Return every flagged response in a conversation.
+
+        Used to hydrate a session snapshot so a client opening (or
+        reloading) a thread sees existing flags, not just ones flagged
+        after it connected.
+
+        :param conversation_id: The conversation to query, e.g.
+            ``"conv_abc123"``.
+        :returns: Mapping of ``response_id`` to :class:`ResponseFlag`.
+            Empty when no response in the conversation is flagged.
         """
         ...
 

@@ -236,6 +236,7 @@ from omnigent.server.schemas import (
     SessionSupersededEvent,
     SessionTerminalPendingEvent,
     SessionTodosEvent,
+    SessionUiSettingsEvent,
     SkillSummary,
     ToolOutputDeltaEvent,
 )
@@ -284,6 +285,24 @@ def _publish_collaboration_mode(session_id: str, mode: str) -> None:
         type="session.collaboration_mode",
         conversation_id=session_id,
         mode=mode,
+    )
+    session_stream.publish(session_id, event.model_dump())
+
+
+def _publish_ui_settings(session_id: str, ui_settings: dict[str, bool]) -> None:
+    """
+    Publish the live per-thread client-UI feature-toggle map for a session.
+
+    :param session_id: Session/conversation identifier, e.g.
+        ``"conv_abc123"``.
+    :param ui_settings: The full merged toggle map after this update, e.g.
+        ``{"response_flagging": true}``.
+    :returns: None.
+    """
+    event = SessionUiSettingsEvent(
+        type="session.ui_settings",
+        conversation_id=session_id,
+        ui_settings=ui_settings,
     )
     session_stream.publish(session_id, event.model_dump())
 
@@ -9115,6 +9134,7 @@ __all__ = [
     "_publish_session_superseded",
     "_publish_status",
     "_publish_terminal_pending",
+    "_publish_ui_settings",
     "_query_host_runner_status",
     "_read_state_entry",
     "_read_upload_capped",

@@ -1607,6 +1607,22 @@ class ModelUsage(BaseModel):
     total_cost_usd: float | None = None
 
 
+class FlaggedResponseInfo(BaseModel):
+    """
+    A single operator-set flag on a response (turn).
+
+    One value in the ``flagged_responses`` map on :class:`SessionResponse`,
+    keyed by ``response_id``. Mirrored live by :class:`ResponseFlaggedEvent`.
+
+    :param flagged_by: Identity of the user who set the flag, e.g.
+        ``"alice@example.com"``. ``None`` in single-user mode.
+    :param flagged_at: Unix epoch seconds when the flag was set.
+    """
+
+    flagged_by: str | None = None
+    flagged_at: int
+
+
 class SessionResponse(BaseModel):
     """
     API representation of a session.
@@ -1921,6 +1937,14 @@ class SessionResponse(BaseModel):
     # ``labels``); set/cleared via ``PATCH /v1/sessions/{id}`` and filtered on
     # ``GET /v1/sessions?project=``.
     project_id: str | None = None
+    # Per-thread client-UI feature toggles, e.g. ``{"response_flagging": true}``.
+    # Empty dict when no toggle has ever been set. Owned by the client — the
+    # server stores and echoes these opaquely (see ``PATCH /v1/sessions/{id}``).
+    ui_settings: dict[str, bool] = Field(default_factory=dict)
+    # Operator-flagged responses (turns) in this session, keyed by
+    # ``response_id``. Empty dict when nothing is flagged. Hydrates a client
+    # opening the thread fresh; live updates arrive via ``response.flagged``.
+    flagged_responses: dict[str, FlaggedResponseInfo] = Field(default_factory=dict)
 
 
 class UpdateSessionRequest(BaseModel):
@@ -2006,6 +2030,11 @@ class UpdateSessionRequest(BaseModel):
         owner-private, only the session owner may file it, and only into a
         project they own — the server verifies both. Independent of the
         legacy ``omni_project`` label, which is set via ``labels``.
+    :param ui_settings: Per-thread client-UI feature toggles to upsert, e.g.
+        ``{"response_flagging": true}``. Merges with existing toggles like
+        ``labels`` — keys not present are left untouched. The key set is
+        owned by the client; the server stores and echoes these opaquely.
+        ``None`` leaves unchanged.
     """
 
     runner_id: str | None = None
@@ -2020,6 +2049,7 @@ class UpdateSessionRequest(BaseModel):
     terminal_launch_args: list[str] | None = None
     archived: bool | None = None
     project_id: str | None = None
+    ui_settings: dict[str, bool] | None = None
     silent: bool = False
 
     model_config = ConfigDict(extra="forbid")
@@ -2764,6 +2794,31 @@ class SessionCollaborationModeEvent(_SSEEventBase):
     type: Literal["session.collaboration_mode"]
     conversation_id: str
     mode: str
+
+
+class SessionUiSettingsEvent(_SSEEventBase):
+    """
+    Per-thread client-UI feature-toggle update.
+
+    Emitted after ``PATCH /v1/sessions/{id}`` writes a non-empty
+    ``ui_settings`` merge, so every connected viewer — including a
+    read-only mobile reader — picks up an operator's toggle live
+    instead of only on next load.
+
+    :param type: Always ``"session.ui_settings"``.
+    :param conversation_id: Session identifier, e.g. ``"conv_abc123"``.
+    :param ui_settings: The full merged toggle map after this update,
+        e.g. ``{"response_flagging": true}``. Clients replace their
+        cached map wholesale (not a per-key patch).
+
+    Category: **transient** (SSE-only). The merged map is persisted on
+    the conversation row, so on reconnect clients read it from the
+    session snapshot's ``ui_settings`` rather than from a replayed event.
+    """
+
+    type: Literal["session.ui_settings"]
+    conversation_id: str
+    ui_settings: dict[str, bool]
 
 
 class SessionAgentChangedEvent(_SSEEventBase):
@@ -3692,6 +3747,39 @@ class PolicyDeniedEvent(_SSEEventBase):
     phase: str = ""
 
 
+class ResponseFlaggedEvent(_SSEEventBase):
+    """
+    Operator flag set or cleared on a response (turn).
+
+    Emitted by ``POST /v1/sessions/{session_id}/responses/{response_id}/flag``
+    after the flag row is written or deleted. Works mid-stream: ``response_id``
+    is allocated at turn start (see ``response.created``), before any
+    ``conversation_items`` row for the turn is persisted, so the assistant
+    bubble can already be keyed on it when this event arrives.
+
+    :param type: Always ``"response.flagged"``.
+    :param conversation_id: Session/conversation id the response belongs to,
+        e.g. ``"conv_abc123"``.
+    :param response_id: The flagged/unflagged turn's response id.
+    :param flagged: ``True`` when the response is now flagged, ``False``
+        when the flag was just cleared.
+    :param flagged_by: Identity of the user who set/cleared the flag, e.g.
+        ``"alice@example.com"``. ``None`` in single-user mode.
+    :param flagged_at: Unix epoch seconds of this flag/unflag write.
+
+    Category: **transient** (SSE-only). The flag is persisted, so on
+    reconnect clients read the current set from the session snapshot's
+    ``flagged_responses`` rather than from a replayed event.
+    """
+
+    type: Literal["response.flagged"]
+    conversation_id: str
+    response_id: str
+    flagged: bool
+    flagged_by: str | None = None
+    flagged_at: int
+
+
 class CreatedEvent(_SSEEventBase):
     """
     Initial event emitted at the start of every streaming response.
@@ -4161,6 +4249,7 @@ ServerStreamEvent = Annotated[
     | SessionModelEvent
     | SessionReasoningEffortEvent
     | SessionCollaborationModeEvent
+    | SessionUiSettingsEvent
     | SessionAgentChangedEvent
     | SessionTodosEvent
     | SessionTerminalPendingEvent
@@ -4198,6 +4287,8 @@ ServerStreamEvent = Annotated[
     | BrowserActionRequestEvent
     # ── Transient (SSE-only) — native policy DENY signal ───────
     | PolicyDeniedEvent
+    # ── Transient (SSE-only) — operator response flag ──────────
+    | ResponseFlaggedEvent
     # ── Transient (SSE-only) — Responses-API turn lifecycle ────
     | CreatedEvent
     | QueuedEvent

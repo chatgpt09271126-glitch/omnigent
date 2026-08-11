@@ -20,6 +20,7 @@ import {
   CornerUpLeftIcon,
   CopyIcon,
   FileTextIcon,
+  FlagIcon,
   FolderIcon,
   GitBranchIcon,
   GitForkIcon,
@@ -787,6 +788,7 @@ export function ChatPage() {
   // Gates the sub-agent spawn chips: only a session that explicitly turned
   // sub-agent routing on shows them (see stripGatedSubagentRoutingChips).
   const subagentRoutingOverride = useChatStore((s) => s.subagentRoutingOverride);
+  const uiSettings = useChatStore((s) => s.uiSettings);
 
   // Build bubbles once per blocks/activeResponse change. Memo here so
   // unrelated store updates (status, loading flags) don't re-walk.
@@ -1167,6 +1169,11 @@ export function ChatPage() {
   );
   const canApprove = activeSession?.canApprove ?? activeConv?.can_approve ?? true;
   const readOnlyReason = readOnlyReasonForSessionLabels(activeSession, activeConv);
+  // Operator-only affordance: flagging a response requires both write access
+  // to the thread and the per-thread "Flag responses" toggle to be on (see
+  // ChatHeader's thread-settings popover, which sets `uiSettings.response_flagging`).
+  const canFlagResponses =
+    permissionLevel !== 1 && readOnlyReason === null && uiSettings.response_flagging === true;
   // Once present, the live session snapshot is authoritative.
   const capabilitySource = {
     labels: activeSession ? (activeSession.labels ?? {}) : (activeConv?.labels ?? {}),
@@ -1221,6 +1228,7 @@ export function ChatPage() {
       loadingMoreHistory={loadingMoreHistory}
       permissionLevel={permissionLevel}
       canApprove={canApprove}
+      canFlagResponses={canFlagResponses}
       readOnlyReason={readOnlyReason}
       effortLevels={effortLevels}
       showEffort={showEffort}
@@ -1451,6 +1459,8 @@ interface MainAgentSurfaceProps {
   permissionLevel: number | null;
   /** Whether this viewer may accept privileged actions. */
   canApprove: boolean;
+  /** Whether this viewer may flag assistant responses (write access + thread setting on). */
+  canFlagResponses: boolean;
   /** Forces composer read-only with the given placeholder when non-null. See ``ComposerProps.readOnlyReason``. */
   readOnlyReason: string | null;
   effortLevels: readonly string[];
@@ -1535,6 +1545,7 @@ function MainAgentSurface({
   loadingMoreHistory,
   permissionLevel,
   canApprove,
+  canFlagResponses,
   readOnlyReason,
   effortLevels,
   showEffort,
@@ -1882,6 +1893,7 @@ function MainAgentSurface({
                     key={bubbleKey(bubble)}
                     bubble={bubble}
                     canApprove={canApprove}
+                    canFlagResponses={canFlagResponses}
                     isLastAssistant={bubbleIndex === lastAssistantIndex}
                     showsWorking={showsWorking && bubbleIndex === lastAssistantIndex}
                   />
@@ -3237,11 +3249,13 @@ export const BubbleView = memo(
   function BubbleView({
     bubble,
     canApprove = true,
+    canFlagResponses = false,
     isLastAssistant = false,
     showsWorking = false,
   }: {
     bubble: Bubble;
     canApprove?: boolean;
+    canFlagResponses?: boolean;
     isLastAssistant?: boolean;
     showsWorking?: boolean;
   }) {
@@ -3265,6 +3279,7 @@ export const BubbleView = memo(
       <AssistantBubble
         bubble={bubble}
         canApprove={canApprove}
+        canFlagResponses={canFlagResponses}
         isLastAssistant={isLastAssistant}
         showsWorking={showsWorking}
       />
@@ -3272,6 +3287,7 @@ export const BubbleView = memo(
   },
   (prev, next) =>
     prev.canApprove === next.canApprove &&
+    prev.canFlagResponses === next.canFlagResponses &&
     (prev.isLastAssistant ?? false) === (next.isLastAssistant ?? false) &&
     (prev.showsWorking ?? false) === (next.showsWorking ?? false) &&
     bubblesEqual(prev.bubble, next.bubble),
@@ -3498,11 +3514,13 @@ function UserBubble({ bubble }: { bubble: Extract<Bubble, { kind: "user" }> }) {
 function AssistantBubble({
   bubble,
   canApprove,
+  canFlagResponses = false,
   isLastAssistant = false,
   showsWorking = false,
 }: {
   bubble: Extract<Bubble, { kind: "assistant" }>;
   canApprove: boolean;
+  canFlagResponses?: boolean;
   isLastAssistant?: boolean;
   showsWorking?: boolean;
 }) {
@@ -3523,6 +3541,11 @@ function AssistantBubble({
   const { isCopied, handleCopy } = useCopyMessage(() => collectBubbleMarkdown(bubble.items));
   // null outside AppShell's provider (isolated tests) → hide the action.
   const forkDialog = useForkDialog();
+  // Subscribed directly (not threaded through BubbleView's memo) so a live
+  // `response.flagged` SSE event re-renders this bubble's highlight
+  // immediately — including mid-stream, before the parent's memo comparator
+  // would otherwise see a prop change.
+  const isFlagged = useChatStore((s) => s.flaggedResponses[bubble.responseId] != null);
 
   if (bubble.items.length === 0) return null;
 
@@ -3540,7 +3563,15 @@ function AssistantBubble({
         from="assistant"
         data-testid="message-bubble"
         data-role="assistant"
-        className={isWide ? "max-w-full" : "max-w-3xl"}
+        data-flagged={isFlagged ? "true" : undefined}
+        className={cn(
+          isWide ? "max-w-full" : "max-w-3xl",
+          // Live, noticeable highlight for an operator-flagged response —
+          // works identically mid-stream (see `isFlagged` above, subscribed
+          // outside BubbleView's memo boundary) or once the turn settles.
+          isFlagged &&
+            "rounded-lg ring-2 ring-amber-500/60 bg-amber-500/10 dark:bg-amber-400/10",
+        )}
       >
         <MessageContent className={isWide ? "w-full" : undefined}>
           <BlockRenderer
@@ -3581,6 +3612,25 @@ function AssistantBubble({
                 onClick={() => forkDialog.openForkDialog({ upToResponseId: bubble.responseId })}
               >
                 <GitForkIcon size={14} />
+              </MessageAction>
+            )}
+            {/* Operator flag: unlike Fork, must stay available while the
+                response is still streaming — that's the point, so an
+                operator can flag a bad answer as it's being written. */}
+            {canFlagResponses && (
+              <MessageAction
+                tooltip={isFlagged ? "Unflag response" : "Flag response"}
+                data-testid="flag-response"
+                onClick={() => {
+                  // The action already rolls back its own optimistic state on
+                  // failure; this catch only prevents an unhandled rejection.
+                  void useChatStore
+                    .getState()
+                    .flagResponse(bubble.responseId, !isFlagged)
+                    .catch(() => {});
+                }}
+              >
+                <FlagIcon size={14} className={isFlagged ? "fill-current" : undefined} />
               </MessageAction>
             )}
           </MessageActions>

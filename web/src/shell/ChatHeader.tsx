@@ -10,6 +10,7 @@ import {
   PanelRightCloseIcon,
   PanelRightIcon,
   ShareIcon,
+  SlidersHorizontalIcon,
   TerminalIcon,
   UserPlusIcon,
 } from "lucide-react";
@@ -18,16 +19,82 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { AgentInfoButton } from "@/components/AgentInfo";
 import { PresenceAvatars } from "@/components/PresenceAvatars";
 import type { Agent } from "@/hooks/useAgents";
 import { cn } from "@/lib/utils";
+import { useChatStore } from "@/store/chatStore";
 import { TAB_BADGE_BASE } from "./railTabs";
 import { ViewModeToggle } from "./ViewModeToggle";
+
+/**
+ * Header icon opening the per-thread feature-toggle popover. Self-contained
+ * (reads/writes the chat store directly, like PresenceAvatars) — its parent
+ * only needs to gate whether the toggle can be edited. The only toggle today
+ * is "Flag responses" (see AssistantBubble/ChatPage), which defaults off for
+ * every new conversation so the feature stays invisible until an operator
+ * opts a specific thread in.
+ */
+function ThreadSettingsButton({ canEdit }: { canEdit: boolean }) {
+  const responseFlagging = useChatStore((s) => s.uiSettings.response_flagging === true);
+
+  function toggleResponseFlagging(checked: boolean) {
+    void useChatStore
+      .getState()
+      .updateUiSetting("response_flagging", checked)
+      .catch(() => {});
+  }
+
+  return (
+    <Popover>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Thread settings"
+              data-testid="thread-settings-trigger"
+              className="hidden text-muted-foreground hover:text-foreground md:inline-flex"
+            >
+              <SlidersHorizontalIcon className="size-4" />
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Thread settings</TooltipContent>
+      </Tooltip>
+      <PopoverContent align="end" className="w-72" data-testid="thread-settings-panel">
+        <div className="flex flex-col gap-3">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            Thread settings
+          </span>
+          <label className="flex items-center justify-between gap-3">
+            <span className="flex flex-col gap-0.5">
+              <span className="text-ui">Flag responses</span>
+              <span className="text-sm text-muted-foreground">
+                Lets an operator highlight a response for every viewer, live.
+              </span>
+            </span>
+            <Switch
+              checked={responseFlagging}
+              disabled={!canEdit}
+              onCheckedChange={toggleResponseFlagging}
+              data-testid="thread-settings-flag-responses"
+            />
+          </label>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 /**
  * Gating flags + handlers for the mobile-only session-menu FAB (the
@@ -122,6 +189,12 @@ interface ChatHeaderProps {
   /** Whether the Files tab/right panel is available for this session. */
   showFilesPanel: boolean;
   /**
+   * Whether this viewer may edit per-thread feature toggles (write access,
+   * same LEVEL_EDIT gate the backend enforces on the PATCH). The popover
+   * itself still renders read-only when false so a viewer can see what's on.
+   */
+  canManageThreadSettings: boolean;
+  /**
    * Whether the right workspace rail has at least one available tab
    * (files, terminals, sub-agents, or todos). Gates the desktop
    * collapse toggle — with no rail content the panel doesn't mount
@@ -169,11 +242,23 @@ export function ChatHeader({
   onAgentInfo,
   hasHeaderMenu,
   showFilesPanel,
+  canManageThreadSettings,
   hasRailContent,
   rightPanelOpen,
   onToggleRightPanel,
   mobileMenu,
 }: ChatHeaderProps) {
+  // Mirrors ThreadSettingsButton's own read for the mobile checkbox-item
+  // fallback (that popover is desktop-only; the mobile three-dot menu needs
+  // the same live value to render its check state).
+  const responseFlagging = useChatStore((s) => s.uiSettings.response_flagging === true);
+  function toggleResponseFlagging(checked: boolean) {
+    void useChatStore
+      .getState()
+      .updateUiSetting("response_flagging", checked)
+      .catch(() => {});
+  }
+
   return (
     <header
       className={cn(
@@ -276,6 +361,12 @@ export function ChatHeader({
         {/* Chat/Terminal switcher for terminal-first sessions — self-gates to
             null otherwise (and in the iOS shell, where it's the native bar). */}
         {conversationId && <ViewModeToggle />}
+        {/* Per-thread feature toggles (currently just "Flag responses").
+            Desktop-only popover; the mobile equivalent is the checkbox item
+            below, folded into the three-dot menu. */}
+        {conversationId && (
+          <ThreadSettingsButton canEdit={canManageThreadSettings} />
+        )}
         {/* Mobile-only three-dot menu folding the action buttons above
             (Share · Agent info) so the header stays
             uncluttered on a phone. The right-panel/rail control is
@@ -316,6 +407,17 @@ export function ChatHeader({
                   <InfoIcon className="size-4" />
                   Agent info
                 </DropdownMenuItem>
+              )}
+              {canManageThreadSettings && (
+                <DropdownMenuCheckboxItem
+                  checked={responseFlagging}
+                  onCheckedChange={toggleResponseFlagging}
+                  data-testid="mobile-flag-responses-toggle"
+                  className="gap-2.5 px-2.5 py-2 text-ui"
+                >
+                  <SlidersHorizontalIcon className="size-4" />
+                  Flag responses
+                </DropdownMenuCheckboxItem>
               )}
             </DropdownMenuContent>
           </DropdownMenu>

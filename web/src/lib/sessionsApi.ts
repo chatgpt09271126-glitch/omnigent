@@ -235,6 +235,10 @@ interface SessionResponseWire {
    * `activeResponse` (the turn-start `running` SSE edge is not replayed).
    */
   active_response_id?: string | null;
+  /** Per-thread UI feature toggles, e.g. `{"response_flagging": true}`. */
+  ui_settings?: Record<string, boolean>;
+  /** Flagged responses at snapshot time, keyed by `response_id`. */
+  flagged_responses?: Record<string, { flagged_by: string | null; flagged_at: number }>;
 }
 
 interface SessionItemsResponseWire {
@@ -326,6 +330,13 @@ function sessionFromWire(wire: SessionResponseWire): Session {
     sandboxStatus: wire.sandbox_status ?? null,
     mcpStartup: wire.mcp_startup ?? null,
     activeResponseId: wire.active_response_id ?? null,
+    uiSettings: wire.ui_settings ?? {},
+    flaggedResponses: Object.fromEntries(
+      Object.entries(wire.flagged_responses ?? {}).map(([responseId, flag]) => [
+        responseId,
+        { flaggedBy: flag.flagged_by, flaggedAt: flag.flagged_at },
+      ]),
+    ),
   };
 }
 
@@ -662,9 +673,13 @@ export async function updateSession(
     runnerId?: string;
     silent?: boolean;
     labels?: Record<string, string>;
+    uiSettings?: Record<string, boolean>;
   },
 ): Promise<Session> {
-  const body: Record<string, string | boolean | null | Record<string, string>> = {};
+  const body: Record<
+    string,
+    string | boolean | null | Record<string, string> | Record<string, boolean>
+  > = {};
   if ("reasoningEffort" in updates) {
     body.reasoning_effort = updates.reasoningEffort ?? "default";
   }
@@ -688,6 +703,11 @@ export async function updateSession(
     // (e.g. the pinned flag on unpin — see PATCH /v1/sessions handler).
     body.labels = updates.labels;
   }
+  if (updates.uiSettings !== undefined) {
+    // Merge-upsert on the server: a second PATCH with a different key
+    // never clobbers a toggle already set (see PATCH /v1/sessions handler).
+    body.ui_settings = updates.uiSettings;
+  }
   if (updates.silent) {
     body.silent = true;
   }
@@ -697,6 +717,31 @@ export async function updateSession(
     body: JSON.stringify(body),
   });
   return sessionFromWire(await readJsonOrThrow<SessionResponseWire>(res));
+}
+
+/**
+ * Flag or unflag a response (turn), even mid-stream — `responseId` is
+ * allocated at turn start, before any item is persisted for it, so this
+ * can be called the moment `response_created` arrives.
+ */
+export async function flagResponse(
+  sessionId: string,
+  responseId: string,
+  flagged: boolean,
+): Promise<{ flaggedBy: string | null; flaggedAt: number }> {
+  const res = await authenticatedFetch(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/responses/${encodeURIComponent(responseId)}/flag`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flagged }),
+    },
+  );
+  const wire = await readJsonOrThrow<{
+    flagged_by: string | null;
+    flagged_at: number;
+  }>(res);
+  return { flaggedBy: wire.flagged_by, flaggedAt: wire.flagged_at };
 }
 
 interface RunnerSummaryWire {

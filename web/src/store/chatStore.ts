@@ -62,6 +62,7 @@ import {
   approve as approveElicitation,
   bindOnlyOnlineRunner,
   createSession,
+  flagResponse as flagResponseApi,
   getSessionSlim,
   fetchInitialHistoryWindow,
   fetchSessionItemsPage,
@@ -488,6 +489,20 @@ export interface ChatState {
     activeForm: string;
   }[];
   /**
+   * Per-thread UI feature toggles (e.g. `{"response_flagging": true}`),
+   * surfaced via the chat header's thread-settings popover. Populated
+   * from the session snapshot on bind and replaced wholesale by
+   * `session.ui_settings` SSE events (full state, not a delta).
+   */
+  uiSettings: Record<string, boolean>;
+  /**
+   * Flagged responses (turns) for the active session, keyed by
+   * `responseId`. Populated from the session snapshot on bind and
+   * updated by `response.flagged` SSE events — works mid-stream since
+   * `responseId` is allocated before any item is persisted for the turn.
+   */
+  flaggedResponses: Record<string, { flaggedBy: string | null; flaggedAt: number }>;
+  /**
    * Skills the bound agent can invoke (bundled + host-discovered).
    * Populated from the session snapshot on bind; empty array
    * before bind. The composer's slash-command menu reads this to
@@ -664,6 +679,20 @@ export interface ChatState {
    * active conversation.
    */
   setCodexPlanMode: (enabled: boolean) => Promise<void>;
+  /**
+   * Toggle a per-thread UI feature (e.g. `"response_flagging"`) for the
+   * active session — optimistic local write, then a merge-PATCH; the
+   * server's canonical value (or a rollback on failure) settles the
+   * state. No-ops when there is no active conversation.
+   */
+  updateUiSetting: (key: string, value: boolean) => Promise<void>;
+  /**
+   * Flag or unflag a response (turn) on the active session — optimistic
+   * local write, then POST; rolls back on failure. Works mid-stream:
+   * `responseId` is allocated at turn start, before any item is
+   * persisted for it. No-ops when there is no active conversation.
+   */
+  flagResponse: (responseId: string, flagged: boolean) => Promise<void>;
   /**
    * Fetch the next page of older messages and prepend them to `blocks`.
    *
@@ -960,6 +989,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessionUsageByModel: null,
   gitBranch: null,
   todos: [],
+  uiSettings: {},
+  flaggedResponses: {},
   skills: [],
   codexModelOptions: [],
   terminalPending: false,
@@ -1654,6 +1685,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         skills: [],
         codexModelOptions: [],
         terminalPending: false,
+        uiSettings: {},
+        flaggedResponses: {},
         viewers: [],
         // Drop any queued "Attach to agent" chip that the outgoing session's
         // composer hadn't drained yet, so it can't bleed into the incoming
@@ -1847,6 +1880,55 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       if (get().conversationId === conversationId) {
         set({ subagentRoutingOverride: previous });
+      }
+      throw err;
+    }
+  },
+
+  updateUiSetting: async (key, value) => {
+    const { conversationId } = get();
+    if (!conversationId) return;
+    const previous = get().uiSettings;
+    // Optimistic flip so the popover switch responds instantly; the merge-PATCH
+    // response (or the rollback below) is the settled truth.
+    set({ uiSettings: { ...previous, [key]: value } });
+    try {
+      const session = await updateSession(conversationId, { uiSettings: { [key]: value } });
+      if (get().conversationId !== conversationId) return;
+      set({ uiSettings: session.uiSettings ?? {} });
+    } catch (err) {
+      if (get().conversationId === conversationId) {
+        set({ uiSettings: previous });
+      }
+      throw err;
+    }
+  },
+
+  flagResponse: async (responseId, flagged) => {
+    const { conversationId } = get();
+    if (!conversationId) return;
+    const previous = get().flaggedResponses;
+    // Optimistic write so the highlight/action responds instantly, including
+    // mid-stream — the settled truth is the POST response (or the `response.flagged`
+    // broadcast it triggers), with rollback on failure.
+    set({
+      flaggedResponses: flagged
+        ? { ...previous, [responseId]: { flaggedBy: null, flaggedAt: Math.floor(Date.now() / 1000) } }
+        : Object.fromEntries(Object.entries(previous).filter(([id]) => id !== responseId)),
+    });
+    try {
+      const result = await flagResponseApi(conversationId, responseId, flagged);
+      if (get().conversationId !== conversationId) return;
+      set((state) => ({
+        flaggedResponses: flagged
+          ? { ...state.flaggedResponses, [responseId]: result }
+          : Object.fromEntries(
+              Object.entries(state.flaggedResponses).filter(([id]) => id !== responseId),
+            ),
+      }));
+    } catch (err) {
+      if (get().conversationId === conversationId) {
+        set({ flaggedResponses: previous });
       }
       throw err;
     }
@@ -2610,6 +2692,8 @@ async function bindStream(
           status: "pending" | "in_progress" | "completed";
           activeForm: string;
         }[],
+        uiSettings: session.uiSettings ?? {},
+        flaggedResponses: session.flaggedResponses ?? {},
       };
     });
     racedNativeModelOptions.delete(id);
@@ -4221,6 +4305,26 @@ export function handleSessionEvent(event: StreamEvent): void {
       // Replace the todo list entirely — each event carries the full
       // current list, not a diff.
       useChatStore.setState({ todos: event.todos });
+      return;
+    case "session_ui_settings":
+      // Full-state replace — the wire event carries the merged map, not a
+      // delta, so every connected viewer (including a read-only reader)
+      // converges on the same toggles.
+      useChatStore.setState({ uiSettings: event.uiSettings });
+      return;
+    case "response_flagged":
+      // Live highlight, including mid-stream: responseId is allocated at
+      // turn start, before any item is persisted for it.
+      useChatStore.setState((state) => ({
+        flaggedResponses: event.flagged
+          ? {
+              ...state.flaggedResponses,
+              [event.responseId]: { flaggedBy: event.flaggedBy ?? null, flaggedAt: event.flaggedAt },
+            }
+          : Object.fromEntries(
+              Object.entries(state.flaggedResponses).filter(([id]) => id !== event.responseId),
+            ),
+      }));
       return;
     case "session_terminal_pending":
       // Toggle the Terminal-pill spinner. The runner sets pending=true

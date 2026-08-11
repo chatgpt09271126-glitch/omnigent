@@ -223,6 +223,9 @@ class Conversation:
     cost_control_mode_override: str | None = None
     subagent_routing_override: str | None = None
     harness_override: str | None = None
+    # Per-session client-UI feature toggles, e.g. {"response_flagging": True}.
+    # Purely presentational — never read by the runtime. Missing key = off.
+    ui_settings: dict[str, bool] = field(default_factory=dict)
     sub_agent_name: str | None = None
     external_session_id: str | None = None
     terminal_launch_args: list[str] | None = None
@@ -240,6 +243,24 @@ class Conversation:
     # Transient: populated only by list_conversations on a content search;
     # never read from or written to the DB.
     search_snippet: str | None = None
+
+
+@dataclass
+class ResponseFlag:
+    """
+    An operator flag on a response (turn), keyed by ``response_id``.
+
+    Independent of ``conversation_items`` — a response can be flagged while
+    its items are still streaming, before anything about the turn has been
+    persisted.
+
+    :param flagged_by: Identity of the user who set the flag, e.g.
+        ``"alice@example.com"``. ``None`` in single-user mode.
+    :param flagged_at: Unix epoch seconds when the flag was set.
+    """
+
+    flagged_by: str | None
+    flagged_at: int
 
 
 # ── Conversation item data types ───────────────────────

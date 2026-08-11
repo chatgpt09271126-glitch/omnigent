@@ -130,6 +130,7 @@ from omnigent.server.routes._sessions.helpers import (
     _publish_collaboration_mode,
     _publish_sandbox_status,
     _publish_terminal_pending,
+    _publish_ui_settings,
     _reject_reserved_cost_control_label_seed,
     _reject_server_reserved_label_seed,
     _require_collaboration_mode_forward,
@@ -1770,9 +1771,12 @@ def register_core_routes(
             _unset_subagent_routing_override=clear_subagent_routing,
             terminal_launch_args=terminal_launch_args,
             archived=body.archived,
+            ui_settings=body.ui_settings,
         )
         if updated is None:
             raise _session_not_found()
+        if body.ui_settings:
+            _publish_ui_settings(session_id, updated.ui_settings)
         # Archiving hides the session from the default view (and its unread
         # dot), so drop its per-user read-state to bound in-memory growth.
         # Only on archive→true; unarchiving leaves it pruned (reads as seen).

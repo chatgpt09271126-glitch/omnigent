@@ -427,8 +427,14 @@ export function AppShell() {
     !!conversationId && isKnownTopLevel && (permissionLevel === null || permissionLevel >= 1);
   // Agent tools/policies exist to show.
   const hasAgentInfo = !!conversationId && agentHasInfo(boundAgent, conversationId);
+  // Thread settings (e.g. response flagging) require write access — the
+  // same LEVEL_EDIT gate the backend enforces on `PATCH /v1/sessions/{id}`.
+  // Permissive on a null level (single-user / still loading), matching the
+  // other gates above.
+  const canManageThreadSettings =
+    !!conversationId && (permissionLevel === null || permissionLevel >= 2);
   // Whether the mobile three-dot menu has any entry to offer.
-  const hasHeaderMenu = canShare || hasAgentInfo;
+  const hasHeaderMenu = canShare || hasAgentInfo || canManageThreadSettings;
   // Claude-native sub-agents have no terminal of their own — the parent
   // owns the tmux pane.
   const isClaudeNativeSubagent =
@@ -1428,6 +1434,7 @@ export function AppShell() {
                   onAgentInfo={() => setAgentInfoOpen(true)}
                   hasHeaderMenu={hasHeaderMenu}
                   showFilesPanel={showFilesPanel}
+                  canManageThreadSettings={canManageThreadSettings}
                   hasRailContent={hasRailContent}
                   rightPanelOpen={rightPanelOpen}
                   onToggleRightPanel={toggleRightPanel}

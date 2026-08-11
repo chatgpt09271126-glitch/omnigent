@@ -1614,6 +1614,33 @@
         "title": "FailedEvent",
         "type": "object"
       },
+      "FlaggedResponseInfo": {
+        "description": "A single operator-set flag on a response (turn).\n\nOne value in the `flagged_responses` map on `SessionResponse`,\nkeyed by `response_id`. Mirrored live by `ResponseFlaggedEvent`.",
+        "properties": {
+          "flagged_at": {
+            "description": "Unix epoch seconds when the flag was set.",
+            "title": "Flagged At",
+            "type": "integer"
+          },
+          "flagged_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Identity of the user who set the flag, e.g. `\"alice@example.com\"`. `None` in single-user mode.",
+            "title": "Flagged By"
+          }
+        },
+        "required": [
+          "flagged_at"
+        ],
+        "title": "FlaggedResponseInfo",
+        "type": "object"
+      },
       "FunctionCallData": {
         "description": "Data for a function_call item.\n\n**Parameters**\n\n- `agent` \u2014 Agent name. Serialized as `\"model\"` in JSON.",
         "properties": {
@@ -2948,6 +2975,71 @@
         "title": "ResourceEventData",
         "type": "object"
       },
+      "ResponseFlaggedEvent": {
+        "description": "Operator flag set or cleared on a response (turn).\n\nEmitted by `POST /v1/sessions/{session_id}/responses/{response_id}/flag`\nafter the flag row is written or deleted. Works mid-stream: `response_id`\nis allocated at turn start (see `response.created`), before any\n`conversation_items` row for the turn is persisted, so the assistant\nbubble can already be keyed on it when this event arrives.",
+        "properties": {
+          "conversation_id": {
+            "description": "Session/conversation id the response belongs to, e.g. `\"conv_abc123\"`.",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "flagged": {
+            "description": "`True` when the response is now flagged, `False` when the flag was just cleared.",
+            "title": "Flagged",
+            "type": "boolean"
+          },
+          "flagged_at": {
+            "description": "Unix epoch seconds of this flag/unflag write. Category: **transient** (SSE-only). The flag is persisted, so on reconnect clients read the current set from the session snapshot's `flagged_responses` rather than from a replayed event.",
+            "title": "Flagged At",
+            "type": "integer"
+          },
+          "flagged_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Identity of the user who set/cleared the flag, e.g. `\"alice@example.com\"`. `None` in single-user mode.",
+            "title": "Flagged By"
+          },
+          "response_id": {
+            "description": "The flagged/unflagged turn's response id.",
+            "title": "Response Id",
+            "type": "string"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sequence Number"
+          },
+          "type": {
+            "const": "response.flagged",
+            "description": "Always `\"response.flagged\"`.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "conversation_id",
+          "response_id",
+          "flagged",
+          "flagged_at"
+        ],
+        "title": "ResponseFlaggedEvent",
+        "type": "object"
+      },
       "ResponseObject": {
         "description": "API representation of a response (task execution result).",
         "properties": {
@@ -3410,6 +3502,7 @@
             "response.elicitation_resolved": "#/components/schemas/ElicitationResolvedEvent",
             "response.error": "#/components/schemas/ErrorEvent",
             "response.failed": "#/components/schemas/FailedEvent",
+            "response.flagged": "#/components/schemas/ResponseFlaggedEvent",
             "response.function_call_output.delta": "#/components/schemas/ToolOutputDeltaEvent",
             "response.heartbeat": "#/components/schemas/HeartbeatEvent",
             "response.in_progress": "#/components/schemas/InProgressEvent",
@@ -3445,6 +3538,7 @@
             "session.terminal.activity": "#/components/schemas/SessionTerminalActivityEvent",
             "session.terminal_pending": "#/components/schemas/SessionTerminalPendingEvent",
             "session.todos": "#/components/schemas/SessionTodosEvent",
+            "session.ui_settings": "#/components/schemas/SessionUiSettingsEvent",
             "session.usage": "#/components/schemas/SessionUsageEvent",
             "turn.cancelled": "#/components/schemas/TurnCancelledEvent",
             "turn.completed": "#/components/schemas/TurnCompletedEvent",
@@ -3468,6 +3562,9 @@
           },
           {
             "$ref": "#/components/schemas/SessionCollaborationModeEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionUiSettingsEvent"
           },
           {
             "$ref": "#/components/schemas/SessionAgentChangedEvent"
@@ -3558,6 +3655,9 @@
           },
           {
             "$ref": "#/components/schemas/PolicyDeniedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ResponseFlaggedEvent"
           },
           {
             "$ref": "#/components/schemas/CreatedEvent"
@@ -5007,6 +5107,13 @@
             "description": "Runtime-native session id this conversation wraps, e.g. a Claude Code session uuid for `omnigent claude` sessions. `None` for regular AP-only conversations. Populated by the wrapper bridge.",
             "title": "External Session Id"
           },
+          "flagged_responses": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FlaggedResponseInfo"
+            },
+            "title": "Flagged Responses",
+            "type": "object"
+          },
           "git_branch": {
             "anyOf": [
               {
@@ -5368,6 +5475,13 @@
             ],
             "description": "Cumulative LLM spend for this session in USD, e.g. `0.42`. `None` when the session is **unpriced** \u2014 no turn has been priced yet (the model is absent from the pricing catalog, or no usage has been recorded) \u2014 so clients render \"\u2014\" rather than a misleading `$0.00`. Server-computed (cache-aware for relay/codex, exact billing for claude-native), the same total the cost-budget policy gates on. Lets clients seed their cost indicator on resume without waiting for the next `session.usage` SSE event.",
             "title": "Total Cost Usd"
+          },
+          "ui_settings": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Ui Settings",
+            "type": "object"
           },
           "updated_at": {
             "anyOf": [
@@ -5784,6 +5898,49 @@
         "title": "SessionTodosEvent",
         "type": "object"
       },
+      "SessionUiSettingsEvent": {
+        "description": "Per-thread client-UI feature-toggle update.\n\nEmitted after `PATCH /v1/sessions/{id}` writes a non-empty\n`ui_settings` merge, so every connected viewer \u2014 including a\nread-only mobile reader \u2014 picks up an operator's toggle live\ninstead of only on next load.",
+        "properties": {
+          "conversation_id": {
+            "description": "Session identifier, e.g. `\"conv_abc123\"`.",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sequence Number"
+          },
+          "type": {
+            "const": "session.ui_settings",
+            "description": "Always `\"session.ui_settings\"`.",
+            "title": "Type",
+            "type": "string"
+          },
+          "ui_settings": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "description": "The full merged toggle map after this update, e.g. `{\"response_flagging\": true}`. Clients replace their cached map wholesale (not a per-key patch). Category: **transient** (SSE-only). The merged map is persisted on the conversation row, so on reconnect clients read it from the session snapshot's `ui_settings` rather than from a replayed event.",
+            "title": "Ui Settings",
+            "type": "object"
+          }
+        },
+        "required": [
+          "type",
+          "conversation_id",
+          "ui_settings"
+        ],
+        "title": "SessionUiSettingsEvent",
+        "type": "object"
+      },
       "SessionUsage": {
         "description": "One session's rolled-up LLM spend for the `GET /v1/usage` report.\n\n`cost_usd` is the subtree total \u2014 the session plus every sub-agent it\nspawned \u2014 read from `session_usage` via\n`omnigent.runtime.policies.builder.load_session_usage`. It is the\nauthoritative session figure (the same value the web session sidebar\nshows as \"Session cost\" and the daily rollup records).\n\n`models` is the per-model cost breakdown, mirroring the web session\nsidebar's per-model list. Deliberately **not guaranteed to sum to\n`cost_usd`**: native harnesses report a single cumulative session\ntotal and the server attributes it to the currently-active model, so on\na session that switched models mid-run each model's bucket is a snapshot\nof the running total rather than that model's own spend. The header\n`cost_usd` stays authoritative; the per-model values are shown\nfaithfully as recorded (same convention as the web UI).",
         "properties": {
@@ -5971,6 +6128,21 @@
           "objective"
         ],
         "title": "SetCodexGoalRequest",
+        "type": "object"
+      },
+      "SetResponseFlagRequest": {
+        "description": "Request body for `POST .../responses/{response_id}/flag`.",
+        "properties": {
+          "flagged": {
+            "description": "`True` to flag the response, `False` to clear an existing flag.",
+            "title": "Flagged",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "flagged"
+        ],
+        "title": "SetResponseFlagRequest",
         "type": "object"
       },
       "SetSharingRequest": {
@@ -6714,6 +6886,21 @@
             ],
             "description": "New title, e.g. `\"debugging auth flow\"`. `None` leaves unchanged.",
             "title": "Title"
+          },
+          "ui_settings": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-thread client-UI feature toggles to upsert, e.g. `{\"response_flagging\": true}`. Merges with existing toggles like `labels` \u2014 keys not present are left untouched. The key set is owned by the client; the server stores and echoes these opaquely. `None` leaves unchanged.",
+            "title": "Ui Settings"
           }
         },
         "title": "UpdateSessionRequest",
@@ -12122,6 +12309,72 @@
         "summary": "Get Session Resource",
         "tags": [
           "session_resources"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/responses/{response_id}/flag": {
+      "post": {
+        "description": "Flag or unflag a response (turn), broadcasting the change live.\n\nRequires `LEVEL_EDIT` on the session in multi-user mode. Works\nmid-stream: `response_id` is allocated at turn start, before any\n`conversation_items` row for the turn is persisted, so the flag\ncan be set the moment streaming begins.\n\n**Parameters**\n\n- `body` \u2014 `{\"flagged\": true}` to flag, `{\"flagged\": false}` to clear.\n\n**Returns:** `{\"response_id\": str, \"flagged\": bool, \"flagged_by\": str | None, \"flagged_at\": int}`.\n\n**Raises**\n\n- `OmnigentError` \u2014 401/403/404 if the user lacks edit permission, or 404 if the session does not exist.",
+        "operationId": "set_response_flag_v1_sessions__session_id__responses__response_id__flag_post",
+        "parameters": [
+          {
+            "description": "The owning session, e.g. `\"conv_abc123\"`.",
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The turn's response id, e.g. `\"resp_xyz789\"`.",
+            "in": "path",
+            "name": "response_id",
+            "required": true,
+            "schema": {
+              "title": "Response Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetResponseFlagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Response Flag V1 Sessions  Session Id  Responses  Response Id  Flag Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Response Flag",
+        "tags": [
+          "response_flags"
         ]
       }
     },
