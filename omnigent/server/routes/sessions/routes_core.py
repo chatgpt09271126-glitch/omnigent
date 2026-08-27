@@ -74,9 +74,6 @@ from omnigent.server.background_session_titles import (
 from omnigent.server.host_registry import HostRegistry, RunnerExitReports
 from omnigent.server.permissions import check_session_access
 from omnigent.server.routes._auth_helpers import (
-    get_approval_access as _get_approval_access,
-)
-from omnigent.server.routes._auth_helpers import (
     get_permission_level as _get_permission_level,
 )
 from omnigent.server.routes._auth_helpers import (
@@ -97,9 +94,12 @@ from omnigent.server.routes._content_type import (
 from omnigent.server.routes._errors import session_not_found as _session_not_found
 from omnigent.server.routes._origin import require_trusted_origin
 from omnigent.server.routes._sessions.common import (
+    _CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY,
+    _CLAUDE_NATIVE_PERMISSION_MODES,
     _CLAUDE_NATIVE_UI_LABEL_KEY,
     _CLAUDE_NATIVE_UI_LABEL_VALUE,
     _CLAUDE_NATIVE_WRAPPER_LABEL_KEY,
+    _CLAUDE_NATIVE_WRAPPER_LABEL_VALUE,
     _CODEX_NATIVE_COLLABORATION_MODE_LABEL_KEY,
     _CODEX_NATIVE_COLLABORATION_MODES,
     _CODEX_NATIVE_WRAPPER_LABEL_VALUE,
@@ -128,6 +128,7 @@ from omnigent.server.routes._sessions.helpers import (
     _presentation_labels_for_agent,
     _prune_session_read_state,
     _publish_collaboration_mode,
+    _publish_permission_mode,
     _publish_sandbox_status,
     _publish_terminal_pending,
     _publish_ui_settings,
@@ -135,6 +136,7 @@ from omnigent.server.routes._sessions.helpers import (
     _reject_server_reserved_label_seed,
     _require_collaboration_mode_forward,
     _require_cost_control_label_authority,
+    _require_permission_mode_forward,
     _reset_runner_resources_after_switch,
     _same_provider_family,
     _session_status_from_cache,
@@ -354,7 +356,6 @@ def register_core_routes(
             await asyncio.to_thread(permission_store.ensure_user, user_id)
             await asyncio.to_thread(permission_store.grant, user_id, resp.id, LEVEL_OWNER)
             resp.permission_level = await _get_permission_level(user_id, resp.id, permission_store)
-            resp.can_approve = True
         # Push the new session to this user's other open tabs (see the
         # multipart path above for the rationale).
         _announce_session_added(user_id, resp.id)
@@ -389,6 +390,18 @@ def register_core_routes(
                 parse_repo_workspace,
             )
 
+            # Like the repo parse below: reject an unconfigured provider on
+            # the POST rather than in the background launch.
+            if (
+                body.sandbox_provider is not None
+                and sandbox_config.for_provider(body.sandbox_provider) is None
+            ):
+                offered = ", ".join(sandbox_config.launchable_providers()) or "none"
+                raise OmnigentError(
+                    f"sandbox provider '{body.sandbox_provider}' is not configured "
+                    f"on this server — available: {offered}",
+                    code=ErrorCode.INVALID_INPUT,
+                )
             # A managed workspace is a repository URL (schema-
             # validated) the launch clones inside the sandbox; parse
             # it now so a malformed URL is a synchronous 4xx, not a
@@ -424,6 +437,9 @@ def register_core_routes(
                     host_store=host_store_for_managed,
                     host_registry=getattr(request.app.state, "host_registry", None),
                     tunnel_registry=getattr(request.app.state, "tunnel_registry", None),
+                    provider=body.sandbox_provider,
+                    agent_store=agent_store,
+                    agent_id=conv.agent_id if conv is not None else None,
                 )
             )
             _managed_launch_tasks.add(launch_task)
@@ -638,7 +654,12 @@ def register_core_routes(
             by_name: dict[str, SessionProjectSummary] = {}
             if project_store is not None:
                 for proj in project_store.list(user_id=user_id):
-                    by_name[proj.name] = SessionProjectSummary(id=proj.id, name=proj.name)
+                    icon = proj.config.get("icon")
+                    by_name[proj.name] = SessionProjectSummary(
+                        id=proj.id,
+                        name=proj.name,
+                        icon=icon if isinstance(icon, str) else None,
+                    )
             # Legacy path: label-derived projects (id=None unless already first-class).
             for name in conversation_store.list_projects(owned_by=user_id):
                 by_name.setdefault(name, SessionProjectSummary(id=None, name=name))
@@ -744,7 +765,6 @@ def register_core_routes(
             conversation_store,
             session_id,
             access.level,
-            access.can_approve,
             agent_store,
             agent_cache,
             conversation=access.conversation,
@@ -1584,6 +1604,34 @@ def register_core_routes(
                     code=ErrorCode.INVALID_INPUT,
                 )
             requested_codex_collaboration_mode = body.collaboration_mode
+        permission_mode_requested = "permission_mode" in body.model_fields_set
+        requested_claude_permission_mode: str | None = None
+        if permission_mode_requested:
+            if body.permission_mode is None:
+                raise OmnigentError(
+                    "permission_mode must be a non-empty string",
+                    code=ErrorCode.INVALID_INPUT,
+                )
+            if body.permission_mode not in _CLAUDE_NATIVE_PERMISSION_MODES:
+                raise OmnigentError(
+                    f"permission_mode must be one of {sorted(_CLAUDE_NATIVE_PERMISSION_MODES)}",
+                    code=ErrorCode.INVALID_INPUT,
+                )
+            conv_for_permission_mode = await asyncio.to_thread(
+                conversation_store.get_conversation,
+                session_id,
+            )
+            if conv_for_permission_mode is None:
+                raise _session_not_found()
+            if (
+                conv_for_permission_mode.labels.get(_CLAUDE_NATIVE_WRAPPER_LABEL_KEY)
+                != _CLAUDE_NATIVE_WRAPPER_LABEL_VALUE
+            ):
+                raise OmnigentError(
+                    "permission_mode is only supported for claude-native sessions",
+                    code=ErrorCode.INVALID_INPUT,
+                )
+            requested_claude_permission_mode = body.permission_mode
         labels_to_set = dict(body.labels or {})
         # Pins are per-user. The client writes the canonical ``omnigent.pinned``
         # key; rewrite it to the caller's per-user key so one user's pin doesn't
@@ -1865,6 +1913,24 @@ def register_core_routes(
                 _codex_plan_enabled,
                 _runner_result,
             )
+        if requested_claude_permission_mode is not None and live_forward:
+            _mode_result = await _forward_session_change_to_runner(
+                session_id,
+                runner_router,
+                {
+                    "type": "permission_mode_change",
+                    "permission_mode": requested_claude_permission_mode,
+                },
+            )
+            # Raises unless the runner confirms the switch, so the label can
+            # never claim a mode Claude isn't in. Stores the mode it reached.
+            labels_to_set[_CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY] = (
+                _require_permission_mode_forward(
+                    session_id,
+                    requested_claude_permission_mode,
+                    _mode_result,
+                )
+            )
         # Some labels are cleared by DELETE, not by upserting an empty value:
         # the project membership (empty = "remove from project") and the pinned
         # flag (empty = "unpin"). Split any empty-valued clear keys out before
@@ -1878,6 +1944,24 @@ def register_core_routes(
                 await asyncio.to_thread(conversation_store.delete_label, session_id, _clear_key)
         if labels_to_set:
             await asyncio.to_thread(conversation_store.set_labels, session_id, labels_to_set)
+        # Only when the switch was forwarded: a silent PATCH writes no label,
+        # and an unconfirmed mode must not reach the picker.
+        if _CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY in labels_to_set:
+            _publish_permission_mode(
+                session_id,
+                labels_to_set[_CLAUDE_NATIVE_PERMISSION_MODE_LABEL_KEY],
+            )
+        # Archiving means "get this out of my way", which contradicts a pin
+        # ("keep it at the top"), so drop the archiver's own pin — otherwise the
+        # session lingers as a pinned row if later unarchived. Runs after the
+        # label upsert so a same-request {archived, pin} can't re-add the pin,
+        # and after _spawn_archive_stop so a raise here can't leave the session
+        # archived-but-not-stopped. Per-user key only; delete_label no-ops when
+        # the session wasn't pinned.
+        if body.archived is True:
+            await asyncio.to_thread(
+                conversation_store.delete_label, session_id, pinned_label_key(user_id)
+            )
         if requested_codex_collaboration_mode is not None:
             _publish_collaboration_mode(
                 session_id,
@@ -1943,15 +2027,7 @@ def register_core_routes(
                 )
                 if not filed:
                     raise _session_not_found()
-        level, can_approve = await asyncio.gather(
-            _get_permission_level(user_id, session_id, permission_store),
-            _get_approval_access(
-                user_id,
-                session_id,
-                permission_store,
-                conversation_store,
-            ),
-        )
+        level = await _get_permission_level(user_id, session_id, permission_store)
         # PATCH callers consume only the snapshot's scalar fields (clients
         # hydrate transcripts via GET /sessions/{id}/items), so skip the
         # items read — it dominated this response's size and build time.
@@ -1959,7 +2035,6 @@ def register_core_routes(
             conversation_store,
             session_id,
             level,
-            can_approve,
             agent_store,
             agent_cache,
             liveness_lookup=liveness_lookup,
@@ -2003,6 +2078,13 @@ def register_core_routes(
         from the truncated items instead of resuming the source's full
         native transcript.
 
+        A sub-agent source is allowed, which is how a sub-agent is
+        promoted to a session of its own: the fork is always a fresh
+        top-level conversation (no parent, its own spawn-tree root, its
+        own owner grant), so it appears in the sidebar and outlives the
+        parent. The source keeps running under its parent untouched,
+        and the fork does not adopt the source's own children.
+
         :param request: The incoming FastAPI request (for auth).
         :param source_id: Session/conversation identifier of the
             source session to fork, e.g. ``"conv_abc123"``.
@@ -2012,9 +2094,8 @@ def register_core_routes(
         :raises OmnigentError: 404 if *source_id* does not exist
             or ``body.agent_id`` is not a bindable built-in agent;
             403 if the caller lacks read access; 400 if the source
-            is a sub-agent session, has no agent binding, or
-            ``body.up_to_response_id`` names no response in the
-            source session.
+            has no agent binding, or ``body.up_to_response_id`` names
+            no response in the source session.
         """
         user_id = _get_user_id(request, auth_provider)
         access = await _require_access_and_level(
@@ -2028,11 +2109,6 @@ def register_core_routes(
                     f"Session not found: {source_id!r}",
                     code=ErrorCode.NOT_FOUND,
                 )
-        if source.kind == "sub_agent":
-            raise OmnigentError(
-                "Cannot fork a sub-agent session — only top-level sessions can be forked.",
-                code=ErrorCode.INVALID_INPUT,
-            )
         if source.agent_id is None:
             raise OmnigentError(
                 "Source session has no agent binding — cannot fork.",
@@ -2118,10 +2194,14 @@ def register_core_routes(
         # the TARGET harness so the clone isn't left in the source's UI mode
         # (e.g. a claude-native source's terminal-first labels would put an
         # SDK clone in terminal mode with a stale interactive terminal).
-        # A same-agent fork leaves the copied labels untouched (None).
+        # A sub-agent source needs the same recompute even without a switch:
+        # its wrapper label marks it as a child with no terminal of its own
+        # (the parent owns the tmux pane), which would strand the top-level
+        # fork in a child's UI mode. A same-agent fork of a top-level source
+        # leaves the copied labels untouched (None).
         presentation_labels = (
             await asyncio.to_thread(_presentation_labels_for_agent, base_agent)
-            if switching_agent
+            if switching_agent or source.kind == "sub_agent"
             else None
         )
 
@@ -2185,7 +2265,6 @@ def register_core_routes(
             fork_items.data,
             "idle",
             permission_level=level,
-            can_approve=True if permission_store is not None else None,
             last_task_error=None,
             agent_name=base_agent.name,
         )
@@ -2411,21 +2490,12 @@ def register_core_routes(
         background_tasks.add_task(_reset_runner_resources_after_switch, session_id)
 
         items = await asyncio.to_thread(conversation_store.list_items, session_id, limit=10000)
-        level, can_approve = await asyncio.gather(
-            _get_permission_level(user_id, session_id, permission_store),
-            _get_approval_access(
-                user_id,
-                session_id,
-                permission_store,
-                conversation_store,
-            ),
-        )
+        level = await _get_permission_level(user_id, session_id, permission_store)
         return _build_session_response(
             updated,
             items.data,
             "idle",
             permission_level=level,
-            can_approve=can_approve,
             last_task_error=None,
             agent_name=target_agent.name,
         )
