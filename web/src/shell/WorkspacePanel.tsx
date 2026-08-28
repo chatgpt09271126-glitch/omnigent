@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { isAndroidShell, isIOSShell } from "@/lib/nativeBridge";
 import { isEditorLevel, isOwnerLevel } from "@/lib/permissionsApi";
 import {
   DropdownMenu,
@@ -696,6 +697,10 @@ export function WorkspacePanel({
     },
     [terminals],
   );
+  // Native mobile shells are reader-first at every device width. An iPad in
+  // landscape can cross Tailwind's desktop breakpoint, so CSS alone would
+  // mount this rail and trap half the conversation behind desktop controls.
+  if (isIOSShell() || isAndroidShell()) return null;
   return (
     <aside
       aria-label="Workspace"

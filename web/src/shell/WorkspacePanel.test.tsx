@@ -9,6 +9,16 @@ import type { ChangedSort } from "./FlatFileList";
 import type { RightRailTab } from "./railTabs";
 import { WorkspacePanel } from "./WorkspacePanel";
 
+const { isIOSShellMock, isAndroidShellMock } = vi.hoisted(() => ({
+  isIOSShellMock: vi.fn(() => false),
+  isAndroidShellMock: vi.fn(() => false),
+}));
+
+vi.mock("@/lib/nativeBridge", () => ({
+  isIOSShell: () => isIOSShellMock(),
+  isAndroidShell: () => isAndroidShellMock(),
+}));
+
 // The rail's content children are exercised by their own suites; stub them so
 // these tests focus on WorkspacePanel's own logic (the open-file/shell tab
 // strips and the content branch that swaps FileViewer ↔ FilesPanel ↔ shell).
@@ -67,6 +77,8 @@ afterEach(() => {
   useSessionAgentMock.mockReturnValue({ data: undefined } as unknown as ReturnType<
     typeof useSessionAgent
   >);
+  isIOSShellMock.mockReturnValue(false);
+  isAndroidShellMock.mockReturnValue(false);
 });
 
 /**
@@ -139,6 +151,17 @@ function renderWorkspace(
 }
 
 describe("WorkspacePanel surface presentation", () => {
+  it.each([
+    ["iOS", isIOSShellMock],
+    ["Android", isAndroidShellMock],
+  ])("does not expose workspace or file controls in the %s mobile shell", (_name, shellMock) => {
+    shellMock.mockReturnValue(true);
+    renderWorkspace();
+
+    expect(screen.queryByRole("complementary", { name: "Workspace" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Files" })).toBeNull();
+  });
+
   it("sits flush to the window edge with a left divider, no floating card frame", () => {
     renderWorkspace();
 
