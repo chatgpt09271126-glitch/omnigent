@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bubble } from "@/lib/renderItems";
 import { FileViewerContext } from "@/shell/FileViewerContext";
+import { useChatStore } from "@/store/chatStore";
 import { BubbleView } from "./ChatPage";
 
 // UserBubble renders its text through the same markdown renderer as the
@@ -9,7 +10,12 @@ import { BubbleView } from "./ChatPage";
 // pin that wiring: if the text path reverts to a raw `{text}` string, the
 // markdown syntax would render literally and these assertions would fail.
 
-afterEach(cleanup);
+const realFlagResponse = useChatStore.getState().flagResponse;
+
+afterEach(() => {
+  cleanup();
+  useChatStore.setState({ flaggedResponses: {}, flagResponse: realFlagResponse });
+});
 
 const FILE_VIEWER_NOOP = {
   openFile: () => {},
@@ -42,10 +48,10 @@ function assistantBubble(
   };
 }
 
-function renderBubble(bubble: Bubble) {
+function renderBubble(bubble: Bubble, canFlagResponses = false) {
   return render(
     <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
-      <BubbleView bubble={bubble} />
+      <BubbleView bubble={bubble} canFlagResponses={canFlagResponses} />
     </FileViewerContext.Provider>,
   );
 }
@@ -180,9 +186,56 @@ describe("AssistantBubble lifecycle rendering", () => {
   });
 });
 
+describe("AssistantBubble response flagging", () => {
+  it("shows a live highlight to read-only viewers without exposing the action", () => {
+    useChatStore.setState({
+      flaggedResponses: {
+        codex_turn_123: { flaggedBy: "operator@example.com", flaggedAt: 123 },
+      },
+    });
+
+    renderBubble(assistantBubble("streaming"));
+
+    expect(screen.getByTestId("message-bubble")).toHaveAttribute("data-flagged", "true");
+    expect(screen.queryByTestId("flag-response")).toBeNull();
+  });
+
+  it("updates the highlight when live flag state changes mid-stream", () => {
+    renderBubble(assistantBubble("streaming"));
+    expect(screen.getByTestId("message-bubble")).not.toHaveAttribute("data-flagged");
+
+    act(() => {
+      useChatStore.setState({
+        flaggedResponses: {
+          codex_turn_123: { flaggedBy: null, flaggedAt: 124 },
+        },
+      });
+    });
+
+    expect(screen.getByTestId("message-bubble")).toHaveAttribute("data-flagged", "true");
+  });
+
+  it("keeps the flag action available while the response is streaming", () => {
+    const flagResponse = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ flagResponse });
+    renderBubble(assistantBubble("streaming"), true);
+
+    fireEvent.click(screen.getByTestId("flag-response"));
+
+    expect(flagResponse).toHaveBeenCalledWith("codex_turn_123", true);
+  });
+});
+
 describe("UserBubble copy button", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("uses a compact action button with an 8px content gap", () => {
+    renderBubble(userBubble("copy me please"));
+
+    expect(screen.getByTestId("message-bubble")).toHaveClass("gap-2");
+    expect(screen.getByRole("button", { name: "Copy" })).toHaveAttribute("data-size", "icon-xxs");
   });
 
   it("copies the message text to the clipboard when clicked", async () => {

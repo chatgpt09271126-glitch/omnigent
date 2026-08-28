@@ -260,6 +260,22 @@ def _cosine(left: dict[str, float], right: dict[str, float]) -> float:
     return dot / (left_norm * right_norm)
 
 
+def reference_disposition(candidate: dict[str, Any]) -> str:
+    """How a referenced issue's state changes what we can ask the reporter for.
+
+    `open` — the discussion is live, so the reporter can move their report there.
+    `fixed` — closed as completed, so hitting it again is a regression or an old
+    build, and the new report has to stay open to capture that.
+    `declined` — closed as not planned, so there is nothing to move a report into.
+    """
+    if candidate.get("state") != "CLOSED":
+        return "open"
+    labels = {label.casefold() for label in _label_names(candidate.get("labels"))}
+    if candidate.get("stateReason") == "NOT_PLANNED" or "wontfix" in labels:
+        return "declined"
+    return "fixed"
+
+
 def validate_duplicate_decision(
     result: dict[str, Any],
     issue: dict[str, Any],
@@ -327,57 +343,179 @@ def validate_duplicate_decision(
         duplicate_of = None
         similar_issues = []
 
+    # The referenced issues' own state decides what the comment can ask for, so
+    # carry it alongside the numbers rather than re-fetching at comment time.
+    referenced = [duplicate_of] if duplicate_of is not None else similar_issues
+    dispositions = {
+        str(number): reference_disposition(candidates_by_number[number])
+        for number in referenced
+        if number in candidates_by_number
+    }
+
     return {
         "duplicate_decision": decision,
         "duplicate_of": duplicate_of,
         "similar_issues": similar_issues,
         "duplicate_confidence": confidence,
         "duplicate_reasoning": _duplicate_reason(decision),
+        "reference_dispositions": dispositions,
     }
 
 
-def build_duplicate_comment(decision: dict[str, Any], *, close_issue: bool) -> str:
-    """Build the public, idempotently identifiable bot comment."""
+def _disposition_for(decision: dict[str, Any], number: int | None) -> str:
+    """Look up a reference's disposition, treating anything unknown as open.
+
+    Defaulting to `open` keeps the wording that assumes a live discussion, which
+    is the safe direction: it asks the reporter to check rather than telling them
+    a fix shipped.
+    """
+    dispositions = decision.get("reference_dispositions")
+    if not isinstance(dispositions, dict):
+        return "open"
+    value = dispositions.get(str(number))
+    return value if value in {"open", "fixed", "declined"} else "open"
+
+
+def build_duplicate_comment(
+    decision: dict[str, Any],
+    *,
+    close_issue: bool,
+    reasoning: str = "",
+) -> str:
+    """Build the public, idempotently identifiable bot comment.
+
+    Wording leads with the issue link — the one thing a reporter can act on —
+    and avoids describing the classifier's internals. A `none` verdict produces
+    no comment at all; the caller is expected not to post it.
+    """
     marker = "<!-- omnigent-duplicate-check -->"
-    reason = decision["duplicate_reasoning"]
 
     if decision["duplicate_decision"] == "duplicate":
         issue_number = decision["duplicate_of"]
+        # Only the closing case owes the reporter a justification, and only there
+        # is the model's own sentence worth surfacing over a fixed string.
+        explanation = f" {_one_sentence(reasoning)}" if close_issue and reasoning else ""
         if close_issue:
-            disposition = (
-                f"I’m closing this issue so discussion stays in #{issue_number}. "
-                "If this report is materially different, please leave a comment and "
-                "a maintainer can reopen it."
+            message = (
+                f"Thanks for reporting this. This looks like the same problem as "
+                f"#{issue_number}, so I’m closing it to keep the discussion in one "
+                f"place.{explanation}\n\n"
+                "If it isn't the same, say so here and a maintainer will reopen it."
+            )
+        elif _disposition_for(decision, issue_number) == "fixed":
+            message = (
+                f"Thanks for reporting this. This looks like the same problem as "
+                f"#{issue_number}, which has already been fixed — so the fix may "
+                f"have shipped after the build you're on.\n\n"
+                "Could you check whether you're on a version that includes it? If "
+                "you are and this still happens, say so here — that makes it a "
+                "regression rather than a duplicate, and we'll keep this open."
+            )
+        elif _disposition_for(decision, issue_number) == "declined":
+            message = (
+                f"Thanks for reporting this. This looks like the same problem as "
+                f"#{issue_number}, which was closed as not planned — worth reading "
+                f"for the reasoning.\n\n"
+                "If your case is different from what was decided there, say what's "
+                "different and we'll pick it up here."
             )
         else:
-            disposition = (
-                "Automatic duplicate closure is currently disabled, so I’m leaving "
-                "this issue open for maintainers to evaluate."
+            # The reporter can settle this faster than a maintainer can: they know
+            # whether the other issue covers their case. Ask them to close it
+            # themselves, and say what to do when it doesn't.
+            message = (
+                f"Thanks for reporting this. This looks like the same problem as "
+                f"#{issue_number} — could you take a look?\n\n"
+                "If it covers your case, please close this one and add anything "
+                f"new over on #{issue_number} so the discussion stays in one place. "
+                "If it doesn't, say what's different and we'll pick it up here."
             )
-        message = (
-            f"Thanks for reporting this. This appears to be a high-confidence "
-            f"duplicate of #{issue_number}.\n\n"
-            f"Reason: {reason}\n\n"
-            f"{disposition}"
-        )
     elif decision["duplicate_decision"] == "similar":
-        references = ", ".join(f"#{number}" for number in decision["similar_issues"])
-        message = (
-            f"Thanks for reporting this. These existing issues may be related: "
-            f"{references}.\n\n"
-            f"Reason: {reason}\n\n"
-            "I’m leaving this issue open because the match is not strong enough "
-            "to treat it as a duplicate."
-        )
+        numbers = decision["similar_issues"]
+        references = ", ".join(f"#{number}" for number in numbers)
+        plural = len(numbers) > 1
+        dispositions = {_disposition_for(decision, number) for number in numbers}
+        # A closed match cannot absorb the report: asking for a self-close would
+        # send the reporter's detail somewhere nobody is reading. Mixed sets keep
+        # the open ask, since at least one live issue can take it.
+        if "open" in dispositions:
+            covers = "they already cover" if plural else "it already covers"
+            message = (
+                f"Thanks for reporting this. {references} may be related — could you "
+                f"take a look in case {covers} this?\n\n"
+                "If it turns out to be the same problem, please close this one and add "
+                "your details there. Otherwise leave a note and we'll pick it up here."
+            )
+        elif dispositions == {"declined"}:
+            was = "were" if plural else "was"
+            message = (
+                f"Thanks for reporting this. {references} may be related, and {was} "
+                f"closed as not planned — worth reading for the reasoning.\n\n"
+                "If your case is different from what was decided there, say what's "
+                "different and we'll pick it up here."
+            )
+        else:
+            # At least one fixed match, possibly beside a declined one. Name each
+            # group separately: claiming a declined issue was fixed is worse than
+            # the extra clause costs.
+            fixed = [n for n in numbers if _disposition_for(decision, n) == "fixed"]
+            declined = [n for n in numbers if _disposition_for(decision, n) == "declined"]
+            fixed_refs = ", ".join(f"#{number}" for number in fixed)
+            many = len(fixed) > 1
+            also = (
+                " ({} {} closed as not planned, for context.)".format(
+                    ", ".join(f"#{number}" for number in declined),
+                    "were" if len(declined) > 1 else "was",
+                )
+                if declined
+                else ""
+            )
+            message = (
+                f"Thanks for reporting this. {fixed_refs} may be related, and "
+                f"{'have' if many else 'has'} already been fixed — so the "
+                f"{'fixes' if many else 'fix'} may have shipped after the build "
+                f"you're on.{also}\n\n"
+                "Could you check whether you're on a version that includes "
+                f"{'them' if many else 'it'}? If you are and this still happens, "
+                "say so here — that makes it a regression rather than a duplicate, "
+                "and we'll keep this open."
+            )
     else:
-        message = (
-            "Thanks for reporting this. I did not find an existing issue that "
-            "confidently matches this report.\n\n"
-            f"Reason: {reason}\n\n"
-            "I’m leaving this issue open for normal triage."
-        )
+        return ""
 
     return f"{marker}\n{message}\n"
+
+
+_MENTION = re.compile(r"@+([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))")
+# `//host` is scheme-relative and still renders as an external link, so it is
+# matched alongside the explicit schemes. Bare domains are left alone: GitHub
+# does not autolink them.
+_URL = re.compile(r"(?:\b(?:https?://|www\.)|(?<![\w:/])//)\S+", re.IGNORECASE)
+_ISSUE_REF = re.compile(r"(?:#|\bGH-)\d+", re.IGNORECASE)
+REASON_MAX_CHARS = 240
+
+
+def _one_sentence(text: str) -> str:
+    """Reduce model prose to one sanitized sentence fit for a public comment.
+
+    The model's text is derived from attacker-controllable issue content, so it
+    is never posted verbatim: mentions would ping real people, links could
+    phish under the bot's badge, and issue refs would cross-link unrelated
+    threads. Each is defanged rather than dropped so the sentence still reads.
+    """
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return ""
+    collapsed = _URL.sub("[link removed]", collapsed)
+    collapsed = _MENTION.sub(r"\1", collapsed)
+    collapsed = _ISSUE_REF.sub("an issue", collapsed)
+    head, separator, _ = collapsed.partition(". ")
+    sentence = head + ("." if separator else "")
+    if not sentence.endswith("."):
+        sentence = f"{sentence}."
+    if len(sentence) > REASON_MAX_CHARS:
+        sentence = f"{sentence[:REASON_MAX_CHARS].rstrip()}…"
+    return sentence
 
 
 def _similarity_map(issue: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[int, float]:
@@ -435,6 +573,7 @@ def _normalize_candidate(issue_number: int, candidate: dict[str, Any]) -> dict[s
         "title": str(candidate.get("title") or "")[:500],
         "body": str(candidate.get("body") or "")[:2000],
         "state": state,
+        "stateReason": str(candidate.get("stateReason") or "").upper(),
         "url": str(candidate.get("url") or ""),
         "createdAt": candidate.get("createdAt"),
         "updatedAt": candidate.get("updatedAt"),

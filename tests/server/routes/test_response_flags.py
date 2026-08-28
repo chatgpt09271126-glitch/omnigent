@@ -15,6 +15,7 @@ the turn) and gate that capability behind a per-conversation UI toggle:
 from __future__ import annotations
 
 import httpx
+import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -22,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from omnigent.db.utils import generate_agent_id
 from omnigent.errors import OmnigentError
+from omnigent.runtime import session_stream
 from omnigent.server.auth import LEVEL_EDIT, LEVEL_OWNER, LEVEL_READ, UnifiedAuthProvider
 from omnigent.server.routes.response_flags import create_response_flags_router
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
@@ -99,6 +101,42 @@ async def test_patch_ui_settings_overwrites_same_key(
     assert resp.json()["ui_settings"] == {"response_flagging": False}
 
 
+async def test_patch_ui_settings_broadcasts_full_merged_state(
+    client: httpx.AsyncClient,
+    session_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Connected viewers receive the complete merged toggle map."""
+    await client.patch(
+        f"/v1/sessions/{session_id}",
+        json={"ui_settings": {"response_flagging": True}},
+    )
+    published: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        session_stream,
+        "publish",
+        lambda conversation_id, event: published.append((conversation_id, event)),
+    )
+
+    resp = await client.patch(
+        f"/v1/sessions/{session_id}",
+        json={"ui_settings": {"other_toggle": False}},
+    )
+
+    assert resp.status_code == 200
+    assert published == [
+        (
+            session_id,
+            {
+                "sequence_number": None,
+                "type": "session.ui_settings",
+                "conversation_id": session_id,
+                "ui_settings": {"response_flagging": True, "other_toggle": False},
+            },
+        )
+    ]
+
+
 # ── POST .../flag: single-user round-trip ────────────────────────────
 
 
@@ -139,6 +177,39 @@ async def test_unflag_response_removes_it(client: httpx.AsyncClient, session_id:
 
     get_resp = await client.get(f"/v1/sessions/{session_id}")
     assert "resp_1" not in get_resp.json()["flagged_responses"]
+
+
+async def test_flag_response_broadcasts_live_event(
+    client: httpx.AsyncClient,
+    session_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every connected viewer receives the persisted flag transition."""
+    published: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        session_stream,
+        "publish",
+        lambda conversation_id, event: published.append((conversation_id, event)),
+    )
+
+    resp = await client.post(
+        f"/v1/sessions/{session_id}/responses/resp_streaming/flag",
+        json={"flagged": True},
+    )
+
+    assert resp.status_code == 200
+    assert len(published) == 1
+    conversation_id, event = published[0]
+    assert conversation_id == session_id
+    assert event == {
+        "sequence_number": None,
+        "type": "response.flagged",
+        "conversation_id": session_id,
+        "response_id": "resp_streaming",
+        "flagged": True,
+        "flagged_by": None,
+        "flagged_at": resp.json()["flagged_at"],
+    }
 
 
 async def test_flag_nonexistent_session_returns_404(client: httpx.AsyncClient) -> None:
