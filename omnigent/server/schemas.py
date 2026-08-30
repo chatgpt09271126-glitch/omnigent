@@ -16,7 +16,7 @@ from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, Strict, field_validator, model_validator
 
-from omnigent.entities import ConversationItem
+from omnigent.entities import ConversationItem, ResponseSignalType
 
 # ── Shared ──────────────────────────────────────────────────────
 
@@ -1695,6 +1695,26 @@ class FlaggedResponseInfo(BaseModel):
     flagged_at: int
 
 
+class ResponseSignalInfo(BaseModel):
+    """One active human signal attached to an assistant response."""
+
+    signal_type: ResponseSignalType
+    signaled_by: str | None = None
+    signaled_at: int
+
+
+class ResponseSignalMutationResponse(BaseModel):
+    """Settled signal state returned after one signal mutation."""
+
+    conversation_id: str
+    response_id: str
+    changed_signal: ResponseSignalType
+    active: bool
+    signaled_by: str | None = None
+    signaled_at: int
+    signals: dict[ResponseSignalType, ResponseSignalInfo] = Field(default_factory=dict)
+
+
 class BackgroundTaskInfo(BaseModel):
     """
     One still-running background shell from the claude-native ``Stop`` hook.
@@ -2044,6 +2064,11 @@ class SessionResponse(BaseModel):
     # ``response_id``. Empty dict when nothing is flagged. Hydrates a client
     # opening the thread fresh; live updates arrive via ``response.flagged``.
     flagged_responses: dict[str, FlaggedResponseInfo] = Field(default_factory=dict)
+    # Generalized human response signals. ``bad`` mirrors the legacy
+    # ``flagged_responses`` map so new clients receive one coherent state.
+    response_signals: dict[str, dict[ResponseSignalType, ResponseSignalInfo]] = Field(
+        default_factory=dict
+    )
 
 
 class UpdateSessionRequest(BaseModel):
@@ -3950,6 +3975,55 @@ class ResponseFlaggedEvent(_SSEEventBase):
     flagged_at: int
 
 
+class ResponseSignalChangedEvent(_SSEEventBase):
+    """One response signal changed, carrying the complete settled state.
+
+    Category: **transient** (SSE-only). Session snapshots restore the current
+    state after reconnect; clients must not replay arrival effects from a
+    snapshot.
+    """
+
+    type: Literal["response.signal_changed"]
+    conversation_id: str
+    response_id: str
+    changed_signal: ResponseSignalType
+    active: bool
+    signaled_by: str | None = None
+    signaled_at: int
+    signals: dict[ResponseSignalType, ResponseSignalInfo] = Field(default_factory=dict)
+
+
+class ResponseHelpRequestedEvent(_SSEEventBase):
+    """Momentary human Help effect associated with an assistant response.
+
+    Category: **transient** (SSE-only). Help is intentionally not restored from
+    snapshots or replayed after reconnect because it represents a live request
+    for the other participant's immediate attention.
+    """
+
+    type: Literal["response.help_requested"]
+    conversation_id: str
+    response_id: str
+    request_id: str
+    requested_by: str | None = None
+    requested_at: int
+
+
+class ResponseScreenshotRequestedEvent(_SSEEventBase):
+    """Momentary human request for a readability screenshot.
+
+    Category: **transient** (SSE-only). Like Help, this effect is not restored
+    from snapshots or replayed after reconnect.
+    """
+
+    type: Literal["response.screenshot_requested"]
+    conversation_id: str
+    response_id: str
+    request_id: str
+    requested_by: str | None = None
+    requested_at: int
+
+
 class CreatedEvent(_SSEEventBase):
     """
     Initial event emitted at the start of every streaming response.
@@ -4459,8 +4533,11 @@ ServerStreamEvent = Annotated[
     | BrowserActionRequestEvent
     # ── Transient (SSE-only) — native policy DENY signal ───────
     | PolicyDeniedEvent
-    # ── Transient (SSE-only) — operator response flag ──────────
+    # ── Transient (SSE-only) — human response signals ──────────
     | ResponseFlaggedEvent
+    | ResponseSignalChangedEvent
+    | ResponseHelpRequestedEvent
+    | ResponseScreenshotRequestedEvent
     # ── Transient (SSE-only) — Responses-API turn lifecycle ────
     | CreatedEvent
     | QueuedEvent

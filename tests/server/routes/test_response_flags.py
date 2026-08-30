@@ -66,6 +66,25 @@ async def test_patch_ui_settings_round_trips(client: httpx.AsyncClient, session_
     assert get_resp.json()["ui_settings"] == {"response_flagging": True}
 
 
+async def test_interview_mode_round_trips_without_clobbering_flags(
+    client: httpx.AsyncClient, session_id: str
+) -> None:
+    """Interview Mode is another opaque per-thread setting, not a DB column."""
+    await client.patch(
+        f"/v1/sessions/{session_id}",
+        json={"ui_settings": {"response_flagging": True}},
+    )
+    resp = await client.patch(
+        f"/v1/sessions/{session_id}",
+        json={"ui_settings": {"interview_mode": True}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ui_settings"] == {
+        "response_flagging": True,
+        "interview_mode": True,
+    }
+
+
 async def test_patch_ui_settings_merges_not_replaces(
     client: httpx.AsyncClient, session_id: str
 ) -> None:
@@ -198,8 +217,11 @@ async def test_flag_response_broadcasts_live_event(
     )
 
     assert resp.status_code == 200
-    assert len(published) == 1
-    conversation_id, event = published[0]
+    assert [event[1]["type"] for event in published] == [
+        "response.signal_changed",
+        "response.flagged",
+    ]
+    conversation_id, event = published[1]
     assert conversation_id == session_id
     assert event == {
         "sequence_number": None,
@@ -212,6 +234,92 @@ async def test_flag_response_broadcasts_live_event(
     }
 
 
+async def test_generalized_signals_replace_and_clear_exclusive_groups(
+    client: httpx.AsyncClient, session_id: str
+) -> None:
+    """Quality and detail groups settle to one active state each."""
+
+    async def signal(signal_type: str, active: bool = True) -> dict[str, object]:
+        response = await client.post(
+            f"/v1/sessions/{session_id}/responses/resp_signal/signal",
+            json={"signal_type": signal_type, "active": active},
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    assert set((await signal("bad"))["signals"]) == {"bad"}
+    assert set((await signal("good"))["signals"]) == {"good"}
+    assert set((await signal("attention"))["signals"]) == {"good", "attention"}
+    assert set((await signal("shorter"))["signals"]) == {"good", "attention", "shorter"}
+    assert set((await signal("more_detail"))["signals"]) == {
+        "good",
+        "attention",
+        "more_detail",
+    }
+    assert set((await signal("good", False))["signals"]) == {"attention", "more_detail"}
+    assert set((await signal("attention", False))["signals"]) == {"more_detail"}
+    assert (await signal("more_detail", False))["signals"] == {}
+
+    snapshot = (await client.get(f"/v1/sessions/{session_id}")).json()
+    assert snapshot["response_signals"] == {}
+    assert snapshot["flagged_responses"] == {}
+
+
+async def test_legacy_flag_appears_as_generalized_bad(
+    client: httpx.AsyncClient, session_id: str
+) -> None:
+    """Existing flag API data is exposed as Bad without a backfill."""
+    await client.post(
+        f"/v1/sessions/{session_id}/responses/resp_legacy/flag",
+        json={"flagged": True},
+    )
+    snapshot = (await client.get(f"/v1/sessions/{session_id}")).json()
+    assert set(snapshot["response_signals"]["resp_legacy"]) == {"bad"}
+    assert "resp_legacy" in snapshot["flagged_responses"]
+
+
+async def test_signals_are_isolated_by_response(
+    client: httpx.AsyncClient, session_id: str
+) -> None:
+    """Multiple response galleries of signals never bleed into each other."""
+    await client.post(
+        f"/v1/sessions/{session_id}/responses/resp_a/signal",
+        json={"signal_type": "good", "active": True},
+    )
+    await client.post(
+        f"/v1/sessions/{session_id}/responses/resp_b/signal",
+        json={"signal_type": "shorter", "active": True},
+    )
+    signals = (await client.get(f"/v1/sessions/{session_id}")).json()["response_signals"]
+    assert set(signals["resp_a"]) == {"good"}
+    assert set(signals["resp_b"]) == {"shorter"}
+
+
+async def test_signals_are_isolated_by_conversation(
+    client: httpx.AsyncClient, session_id: str, db_uri: str
+) -> None:
+    """The same response id in another conversation has independent state."""
+    agent_store = SqlAlchemyAgentStore(db_uri)
+    conversation_store = SqlAlchemyConversationStore(db_uri)
+    agent_id = generate_agent_id()
+    agent_store.create(agent_id, name="signal-isolation-agent", bundle_location="test:///bundle")
+    other = conversation_store.create_conversation(agent_id=agent_id)
+
+    await client.post(
+        f"/v1/sessions/{session_id}/responses/resp_shared/signal",
+        json={"signal_type": "good", "active": True},
+    )
+    await client.post(
+        f"/v1/sessions/{other.id}/responses/resp_shared/signal",
+        json={"signal_type": "attention", "active": True},
+    )
+
+    first = (await client.get(f"/v1/sessions/{session_id}")).json()["response_signals"]
+    second = (await client.get(f"/v1/sessions/{other.id}")).json()["response_signals"]
+    assert set(first["resp_shared"]) == {"good"}
+    assert set(second["resp_shared"]) == {"attention"}
+
+
 async def test_flag_nonexistent_session_returns_404(client: httpx.AsyncClient) -> None:
     """Flagging a response on a nonexistent session returns 404."""
     resp = await client.post(
@@ -219,6 +327,82 @@ async def test_flag_nonexistent_session_returns_404(client: httpx.AsyncClient) -
         json={"flagged": True},
     )
     assert resp.status_code == 404
+
+
+async def test_help_request_broadcasts_without_persisting_signal_state(
+    client: httpx.AsyncClient,
+    session_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Help is a one-shot session event, not a signal restored on reconnect."""
+    published: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        session_stream,
+        "publish",
+        lambda conversation_id, event: published.append((conversation_id, event)),
+    )
+
+    response = await client.post(
+        f"/v1/sessions/{session_id}/responses/resp_help/help",
+        json={"request_id": "help_mobile_1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == published[0][1]
+    assert published[0][0] == session_id
+    assert published[0][1] == {
+        "sequence_number": None,
+        "type": "response.help_requested",
+        "conversation_id": session_id,
+        "response_id": "resp_help",
+        "request_id": "help_mobile_1",
+        "requested_by": None,
+        "requested_at": response.json()["requested_at"],
+    }
+    snapshot = (await client.get(f"/v1/sessions/{session_id}")).json()
+    assert snapshot["response_signals"] == {}
+
+
+async def test_help_request_rejects_missing_session(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/v1/sessions/1d0b12236c77f69f5073a53583de1a3f/responses/resp_help/help",
+        json={"request_id": "help_mobile_2"},
+    )
+    assert response.status_code == 404
+
+
+async def test_screenshot_request_broadcasts_without_persisting_signal_state(
+    client: httpx.AsyncClient,
+    session_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Screenshot pls is a live human request, not reconnect state."""
+    published: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        session_stream,
+        "publish",
+        lambda conversation_id, event: published.append((conversation_id, event)),
+    )
+
+    response = await client.post(
+        f"/v1/sessions/{session_id}/responses/resp_code/screenshot-request",
+        json={"request_id": "screenshot_mobile_1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == published[0][1]
+    assert published[0][0] == session_id
+    assert published[0][1] == {
+        "sequence_number": None,
+        "type": "response.screenshot_requested",
+        "conversation_id": session_id,
+        "response_id": "resp_code",
+        "request_id": "screenshot_mobile_1",
+        "requested_by": None,
+        "requested_at": response.json()["requested_at"],
+    }
+    snapshot = (await client.get(f"/v1/sessions/{session_id}")).json()
+    assert snapshot["response_signals"] == {}
 
 
 # ── POST .../flag: multi-user permission gating ──────────────────────
@@ -291,6 +475,62 @@ def test_read_only_collaborator_cannot_flag(db_uri: str) -> None:
     assert resp.status_code == 403
 
 
+def test_read_only_collaborator_cannot_signal(db_uri: str) -> None:
+    """The generalized endpoint keeps the existing LEVEL_EDIT boundary."""
+    conversation_store, permission_store, conv_id = _seed_multi_user_session(
+        db_uri, grant=(BOB, LEVEL_READ)
+    )
+    app = _multi_user_app(conversation_store, permission_store)
+    resp = TestClient(app).post(
+        f"/v1/sessions/{conv_id}/responses/resp_1/signal",
+        json={"signal_type": "attention", "active": True},
+        headers={"X-Forwarded-Email": BOB},
+    )
+    assert resp.status_code == 403
+
+
+def test_read_only_collaborator_cannot_request_help(db_uri: str) -> None:
+    """Help uses the same existing prompt/signal edit boundary."""
+    conversation_store, permission_store, conv_id = _seed_multi_user_session(
+        db_uri, grant=(BOB, LEVEL_READ)
+    )
+    app = _multi_user_app(conversation_store, permission_store)
+    resp = TestClient(app).post(
+        f"/v1/sessions/{conv_id}/responses/resp_1/help",
+        json={"request_id": "help_read_only"},
+        headers={"X-Forwarded-Email": BOB},
+    )
+    assert resp.status_code == 403
+
+
+def test_read_only_collaborator_cannot_request_screenshot(db_uri: str) -> None:
+    """Screenshot requests keep the existing prompt/signal edit boundary."""
+    conversation_store, permission_store, conv_id = _seed_multi_user_session(
+        db_uri, grant=(BOB, LEVEL_READ)
+    )
+    app = _multi_user_app(conversation_store, permission_store)
+    resp = TestClient(app).post(
+        f"/v1/sessions/{conv_id}/responses/resp_1/screenshot-request",
+        json={"request_id": "screenshot_read_only"},
+        headers={"X-Forwarded-Email": BOB},
+    )
+    assert resp.status_code == 403
+
+
+def test_editor_help_preserves_actor(db_uri: str) -> None:
+    conversation_store, permission_store, conv_id = _seed_multi_user_session(
+        db_uri, grant=(BOB, LEVEL_EDIT)
+    )
+    app = _multi_user_app(conversation_store, permission_store)
+    resp = TestClient(app).post(
+        f"/v1/sessions/{conv_id}/responses/resp_1/help",
+        json={"request_id": "help_editor"},
+        headers={"X-Forwarded-Email": BOB},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["requested_by"] == BOB
+
+
 def test_editor_can_flag(db_uri: str) -> None:
     """A LEVEL_EDIT collaborator (Bob) can flag a response."""
     conversation_store, permission_store, conv_id = _seed_multi_user_session(
@@ -305,3 +545,18 @@ def test_editor_can_flag(db_uri: str) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["flagged_by"] == BOB
+
+
+def test_editor_signal_preserves_actor(db_uri: str) -> None:
+    """The active signal keeps the collaborator who most recently set it."""
+    conversation_store, permission_store, conv_id = _seed_multi_user_session(
+        db_uri, grant=(BOB, LEVEL_EDIT)
+    )
+    app = _multi_user_app(conversation_store, permission_store)
+    resp = TestClient(app).post(
+        f"/v1/sessions/{conv_id}/responses/resp_1/signal",
+        json={"signal_type": "shorter", "active": True},
+        headers={"X-Forwarded-Email": BOB},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["signals"]["shorter"]["signaled_by"] == BOB

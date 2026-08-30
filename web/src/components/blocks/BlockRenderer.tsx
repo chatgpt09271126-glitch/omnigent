@@ -25,7 +25,15 @@
 //    bubbles) keeps its trace expanded.
 
 import type { ReactNode } from "react";
-import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { LIVE_ITEM_PREFIX } from "@/lib/blocks";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -115,6 +123,37 @@ interface BlockRendererProps {
   lastActivityAtS?: number;
   /** Whether this final bubble is still part of a visible active turn. */
   showsWorking?: boolean;
+  snapshotConversationId?: string | null;
+  snapshotResponseId?: string;
+  canEditSnapshots?: boolean;
+  snapshotsStable?: boolean;
+}
+
+interface SnapshotRenderContextValue {
+  conversationId: string;
+  responseId: string;
+  canEdit: boolean;
+  stable: boolean;
+}
+
+const SnapshotRenderContext = createContext<SnapshotRenderContextValue | null>(null);
+
+function AssistantMarkdownText({ item }: { item: Extract<RenderItem, { kind: "text" }> }) {
+  const snapshotContext = useContext(SnapshotRenderContext);
+  const codeSnapshotContext =
+    snapshotContext?.stable && item.final && item.itemId
+      ? {
+          conversationId: snapshotContext.conversationId,
+          responseId: snapshotContext.responseId,
+          itemId: item.itemId,
+          canEdit: snapshotContext.canEdit,
+        }
+      : null;
+  return (
+    <FilePathAwareMessageResponse codeSnapshotContext={codeSnapshotContext}>
+      {item.text}
+    </FilePathAwareMessageResponse>
+  );
 }
 
 /** The subset of {@link BlockRendererProps} the fold decision reads. */
@@ -235,6 +274,10 @@ export function BlockRenderer({
   hasPendingElicitation = false,
   lastActivityAtS,
   showsWorking = false,
+  snapshotConversationId,
+  snapshotResponseId,
+  canEditSnapshots = false,
+  snapshotsStable = false,
   onRetryError,
 }: BlockRendererProps) {
   const { isOwnTurnLive, possiblyLive, isTurnLive } = turnLiveness({
@@ -315,25 +358,44 @@ export function BlockRenderer({
     else if (showFold) foldLatchedRef.current = true;
   });
 
+  const snapshotContext = useMemo(
+    () =>
+      snapshotConversationId && snapshotResponseId
+        ? {
+            conversationId: snapshotConversationId,
+            responseId: snapshotResponseId,
+            canEdit: canEditSnapshots,
+            stable: snapshotsStable,
+          }
+        : null,
+    [canEditSnapshots, snapshotConversationId, snapshotResponseId, snapshotsStable],
+  );
+
   if (showFold) {
     return (
-      <>
-        <TurnWorkedFold workedForS={workedForS} animateCollapse={animateCollapse}>
-          {renderSequence(process, { liveEdge: false })}
-        </TurnWorkedFold>
-        {exempt.map(({ item, index }) =>
-          renderItem(item, index, false, false, false, onRetryError),
-        )}
-        {renderSequence(final, { liveEdge: false, indexBase: finalStart, onRetryError })}
-      </>
+      <SnapshotRenderContext.Provider value={snapshotContext}>
+        <>
+          <TurnWorkedFold workedForS={workedForS} animateCollapse={animateCollapse}>
+            {renderSequence(process, { liveEdge: false })}
+          </TurnWorkedFold>
+          {exempt.map(({ item, index }) =>
+            renderItem(item, index, false, false, false, onRetryError),
+          )}
+          {renderSequence(final, { liveEdge: false, indexBase: finalStart, onRetryError })}
+        </>
+      </SnapshotRenderContext.Provider>
     );
   }
 
-  return renderSequence(items, {
-    liveEdge: isTurnLive,
-    suppressReasoningDuration: showsWorking,
-    onRetryError,
-  });
+  return (
+    <SnapshotRenderContext.Provider value={snapshotContext}>
+      {renderSequence(items, {
+        liveEdge: isTurnLive,
+        suppressReasoningDuration: showsWorking,
+        onRetryError,
+      })}
+    </SnapshotRenderContext.Provider>
+  );
 }
 
 /**
@@ -757,7 +819,7 @@ function renderItem(
           data-testid="assistant-text-section"
           className={cn("min-w-0", followsText && "mt-2")}
         >
-          <FilePathAwareMessageResponse>{item.text}</FilePathAwareMessageResponse>
+          <AssistantMarkdownText item={item} />
         </div>
       );
     case "reasoning":

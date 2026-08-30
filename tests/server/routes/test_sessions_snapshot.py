@@ -188,6 +188,11 @@ class _ConversationStore:
         del conversation_id
         return {}
 
+    def list_response_signals(self, conversation_id: str) -> dict[str, object]:
+        """No response signals are set in these snapshot tests."""
+        del conversation_id
+        return {}
+
     def list_items(
         self,
         *,

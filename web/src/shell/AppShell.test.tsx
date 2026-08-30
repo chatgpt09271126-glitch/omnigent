@@ -2,6 +2,7 @@ import type * as UseTerminalsModule from "@/hooks/useTerminals";
 import type * as UseChildSessionsModule from "@/hooks/useChildSessions";
 import type * as UseSessionModule from "@/hooks/useSession";
 import type * as UseConversationsModule from "@/hooks/useConversations";
+import type * as NativeBridgeModule from "@/lib/nativeBridge";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -19,6 +20,28 @@ import type { ServerInfo } from "@/lib/capabilities";
 import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
 import { writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
 import { writeWorkspacePanelDefault } from "@/lib/workspacePanelPreferences";
+
+const { isMobileViewportMock, isIOSShellMock, isAndroidShellMock, isMobileWebDeviceMock } =
+  vi.hoisted(() => ({
+    isMobileViewportMock: vi.fn(() => false),
+    isIOSShellMock: vi.fn(() => false),
+    isAndroidShellMock: vi.fn(() => false),
+    isMobileWebDeviceMock: vi.fn(() => false),
+  }));
+
+vi.mock("@/hooks/useIsMobileViewport", () => ({
+  useIsMobileViewport: () => isMobileViewportMock(),
+}));
+
+vi.mock("@/lib/mobileDevice", () => ({
+  isMobileWebDevice: () => isMobileWebDeviceMock(),
+}));
+
+vi.mock("@/lib/nativeBridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof NativeBridgeModule>()),
+  isIOSShell: () => isIOSShellMock(),
+  isAndroidShell: () => isAndroidShellMock(),
+}));
 
 vi.mock("@/hooks/useConversations", async (importOriginal) => ({
   // Keep the real module (PROJECT_LABEL_KEY, the mutation hooks) — only the
@@ -483,6 +506,10 @@ function withWindowOrigin(origin: string, run: () => void) {
 }
 
 beforeEach(() => {
+  isMobileViewportMock.mockReturnValue(false);
+  isIOSShellMock.mockReturnValue(false);
+  isAndroidShellMock.mockReturnValue(false);
+  isMobileWebDeviceMock.mockReturnValue(false);
   useConvMock.mockReset();
   useTerminalsMock.mockReset();
   useTerminalsMock.mockReturnValue({
@@ -532,6 +559,7 @@ beforeEach(() => {
     terminalPending: false,
     sessionStatus: "idle",
     status: "idle",
+    uiSettings: {},
   });
 });
 
@@ -676,6 +704,61 @@ describe("AppShell header", () => {
     renderShell("/c/conv_terminal");
 
     expect(screen.getByTestId("view-probe")).toHaveAttribute("data-terminal-starting-up", "true");
+  });
+});
+
+describe("AppShell mobile Interview Mode", () => {
+  it("replaces developer rails and drawers with the minimal session drawer", () => {
+    isMobileViewportMock.mockReturnValue(true);
+    mockConversations([{ id: "conv_interview", permission_level: 2 }]);
+    useChatStore.setState({ uiSettings: { interview_mode: true } });
+
+    renderShell("/c/conv_interview");
+
+    expect(screen.getByTestId("interview-session-drawer")).toBeInTheDocument();
+    expect(screen.queryByTestId("sidebar")).toBeNull();
+    expect(screen.queryByTestId("files-panel")).toBeNull();
+    expect(screen.queryByTestId("files-panel-drawer")).toBeNull();
+    expect(screen.queryByTestId("terminals-panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open session menu" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Thread settings" })).toBeInTheDocument();
+  });
+
+  it("uses the minimal shell in a wide iOS webview", () => {
+    isIOSShellMock.mockReturnValue(true);
+    mockConversations([{ id: "conv_ipad", permission_level: 4 }]);
+    useChatStore.setState({ uiSettings: { interview_mode: true } });
+
+    renderShell("/c/conv_ipad");
+
+    expect(screen.getByTestId("interview-session-drawer")).toBeInTheDocument();
+    expect(screen.queryByTestId("sidebar")).toBeNull();
+    expect(screen.queryByTestId("workspace-panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Conversation actions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open session menu" })).toBeNull();
+  });
+
+  it("uses the minimal shell in a wide mobile web browser", () => {
+    isMobileWebDeviceMock.mockReturnValue(true);
+    mockConversations([{ id: "conv_ipad_safari", permission_level: 4 }]);
+    useChatStore.setState({ uiSettings: { interview_mode: true } });
+
+    renderShell("/c/conv_ipad_safari");
+
+    expect(screen.getByTestId("interview-session-drawer")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByTestId("sidebar")).toBeNull();
+    expect(screen.queryByTestId("workspace-panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Conversation actions" })).toBeNull();
+  });
+
+  it("preserves the standard wide mobile-browser shell when Interview Mode is off", () => {
+    isMobileWebDeviceMock.mockReturnValue(true);
+    mockConversations([{ id: "conv_standard_ipad", permission_level: 4 }]);
+
+    renderShell("/c/conv_standard_ipad");
+
+    expect(screen.getByTestId("sidebar")).toBeInTheDocument();
+    expect(screen.queryByTestId("interview-session-drawer")).toBeNull();
   });
 });
 

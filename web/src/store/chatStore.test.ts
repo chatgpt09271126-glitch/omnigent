@@ -36,6 +36,7 @@ import { INITIAL_WINDOW_ITEMS, SESSION_HISTORY_PAGE_SIZE } from "@/lib/sessionsA
 import { SSE_STALL_TIMEOUT_MS, withStallGuard } from "@/lib/sse";
 import { getCurrentAuthorId } from "@/lib/identity";
 import { PRESENCE_IDLE_AFTER_MS } from "@/lib/presenceIdle";
+import { markLocalEffectRequest, onResponseEffectArrival } from "@/lib/responseSignals";
 import {
   setOmnigentHostConfig,
   type OmnigentAnalyticsEvent,
@@ -4888,6 +4889,91 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
         resp_keep: { flaggedBy: null, flaggedAt: 10 },
       });
     });
+
+    it("routes generalized signal state to the delivering conversation", () => {
+      bindConversationForTest("conv_signals_bg");
+      bindConversationForTest("conv_signals_fg");
+
+      handleSessionEvent(
+        {
+          type: "response_signal_changed",
+          conversationId: "conv_signals_bg",
+          responseId: "resp_streaming",
+          changedSignal: "good",
+          active: true,
+          signaledBy: "mobile@example.com",
+          signaledAt: 200,
+          signals: {
+            good: { signalType: "good", signaledBy: "mobile@example.com", signaledAt: 200 },
+            attention: {
+              signalType: "attention",
+              signaledBy: "mobile@example.com",
+              signaledAt: 199,
+            },
+          },
+        },
+        "conv_signals_bg",
+      );
+
+      expect(conversationRegistry.peek("conv_signals_bg")!.getState().responseSignals).toEqual({
+        resp_streaming: {
+          good: { signalType: "good", signaledBy: "mobile@example.com", signaledAt: 200 },
+          attention: {
+            signalType: "attention",
+            signaledBy: "mobile@example.com",
+            signaledAt: 199,
+          },
+        },
+      });
+      expect(useChatStore.getState().conversationId).toBe("conv_signals_fg");
+      expect(useChatStore.getState().responseSignals).toEqual({});
+    });
+
+    it("broadcasts remote human effects but suppresses the initiating tab echo", () => {
+      bindConversationForTest("conv_help");
+      const arrivals: string[] = [];
+      const unsubscribe = onResponseEffectArrival((arrival) =>
+        arrivals.push(`${arrival.effectType}:${arrival.requestId}`),
+      );
+      markLocalEffectRequest("help_local");
+
+      handleSessionEvent(
+        {
+          type: "response_help_requested",
+          conversationId: "conv_help",
+          responseId: "resp_a",
+          requestId: "help_local",
+          requestedBy: "mobile@example.com",
+          requestedAt: 201,
+        },
+        "conv_help",
+      );
+      handleSessionEvent(
+        {
+          type: "response_help_requested",
+          conversationId: "conv_help",
+          responseId: "resp_a",
+          requestId: "help_remote",
+          requestedBy: "mobile@example.com",
+          requestedAt: 202,
+        },
+        "conv_help",
+      );
+      handleSessionEvent(
+        {
+          type: "response_screenshot_requested",
+          conversationId: "conv_help",
+          responseId: "resp_a",
+          requestId: "screenshot_remote",
+          requestedBy: "desktop@example.com",
+          requestedAt: 203,
+        },
+        "conv_help",
+      );
+
+      expect(arrivals).toEqual(["help:help_remote", "screenshot:screenshot_remote"]);
+      unsubscribe();
+    });
   });
 
   describe("session.collaboration_mode", () => {
@@ -7565,6 +7651,22 @@ describe("chatStore — session status reconciled when the tab returns visible",
           flagged_responses: reconnect
             ? { resp_missed: { flagged_by: "operator@example.com", flagged_at: 456 } }
             : {},
+          response_signals: reconnect
+            ? {
+                resp_missed: {
+                  bad: {
+                    signal_type: "bad",
+                    signaled_by: "operator@example.com",
+                    signaled_at: 456,
+                  },
+                  attention: {
+                    signal_type: "attention",
+                    signaled_by: "mobile@example.com",
+                    signaled_at: 457,
+                  },
+                },
+              }
+            : {},
         });
       }
       return defaultFetchHandler(input, init);
@@ -7584,6 +7686,16 @@ describe("chatStore — session status reconciled when the tab returns visible",
       uiSettings: { response_flagging: true },
       flaggedResponses: {
         resp_missed: { flaggedBy: "operator@example.com", flaggedAt: 456 },
+      },
+      responseSignals: {
+        resp_missed: {
+          bad: { signalType: "bad", signaledBy: "operator@example.com", signaledAt: 456 },
+          attention: {
+            signalType: "attention",
+            signaledBy: "mobile@example.com",
+            signaledAt: 457,
+          },
+        },
       },
     });
   });

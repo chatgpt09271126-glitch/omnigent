@@ -63,16 +63,39 @@ import {
   approve as approveElicitation,
   bindOnlyOnlineRunner,
   createSession,
-  flagResponse as flagResponseApi,
   getSessionSlim,
   fetchSessionItemsPage,
   INITIAL_WINDOW_ITEMS,
   interrupt as interruptSession,
   openSessionStream,
   postEvent,
+  requestResponseHelp as requestResponseHelpApi,
+  requestResponseScreenshot as requestResponseScreenshotApi,
+  signalResponse as signalResponseApi,
   type SessionItemsPage,
   updateSession,
 } from "@/lib/sessionsApi";
+import {
+  consumeLocalEffectRequest,
+  emitResponseEffectArrival,
+  emitResponseSignalArrival,
+  forgetLocalEffectRequest,
+  markLocalEffectRequest,
+  responseStateAfterMutation,
+  type ResponseSignalsByResponse,
+  type ResponseSignalType,
+} from "@/lib/responseSignals";
+
+function withoutRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([name]) => name !== key));
+}
+
+function createTransientRequestId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `effect-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  );
+}
 import type {
   McpServerStartup,
   SessionInputConsumedEvent,
@@ -512,6 +535,8 @@ export interface ConversationState {
    * `responseId` is allocated before any item is persisted for the turn.
    */
   flaggedResponses: Record<string, { flaggedBy: string | null; flaggedAt: number }>;
+  /** Active generalized signals keyed by stable response id. */
+  responseSignals: ResponseSignalsByResponse;
   /**
    * Skills the bound agent can invoke (bundled + host-discovered).
    * Populated from the session snapshot on bind; empty array
@@ -787,6 +812,16 @@ export interface ChatActions {
    * persisted for it. No-ops when there is no active conversation.
    */
   flagResponse: (responseId: string, flagged: boolean) => Promise<void>;
+  /** Set or clear one generalized response signal. */
+  signalResponse: (
+    responseId: string,
+    signalType: ResponseSignalType,
+    active: boolean,
+  ) => Promise<void>;
+  /** Send a transient Help effect to other connected viewers. */
+  requestResponseHelp: (responseId: string) => Promise<void>;
+  /** Ask other connected viewers for a readability screenshot. */
+  requestResponseScreenshot: (responseId: string) => Promise<void>;
   /**
    * Switch a running claude-native session's permission mode (e.g. to
    * ``"auto"``). Rejects when the live TUI could not reach the mode, so
@@ -1361,6 +1396,7 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
   todos: [],
   uiSettings: {},
   flaggedResponses: {},
+  responseSignals: {},
   skills: [],
   codexModelOptions: [],
   terminalPending: false,
@@ -2315,33 +2351,93 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
   },
 
   flagResponse: async (responseId, flagged) => {
+    await get().signalResponse(responseId, "bad", flagged);
+  },
+
+  signalResponse: async (responseId, signalType, active) => {
     const { conversationId } = get();
     if (!conversationId) return;
-    const previous = setterForState(conversationId)?.flaggedResponses ?? get().flaggedResponses;
+    const current = setterForState(conversationId) ?? get();
+    const previousSignals = current.responseSignals;
+    const previousFlags = current.flaggedResponses;
     const patchSet = setterFor(conversationId);
-    // Optimistic write so the highlight/action responds instantly, including
-    // mid-stream — the settled truth is the POST response (or the `response.flagged`
-    // broadcast it triggers), with rollback on failure.
-    patchSet({
-      flaggedResponses: flagged
-        ? {
-            ...previous,
-            [responseId]: { flaggedBy: null, flaggedAt: Math.floor(Date.now() / 1000) },
-          }
-        : Object.fromEntries(Object.entries(previous).filter(([id]) => id !== responseId)),
-    });
+    const now = Math.floor(Date.now() / 1000);
+    const responseState = responseStateAfterMutation(
+      previousSignals[responseId] ?? {},
+      signalType,
+      active,
+      { signalType, signaledBy: null, signaledAt: now },
+    );
+    let optimisticSignals = { ...previousSignals };
+    if (Object.keys(responseState).length > 0) optimisticSignals[responseId] = responseState;
+    else optimisticSignals = withoutRecordKey(optimisticSignals, responseId);
+    let optimisticFlags = { ...previousFlags };
+    if (responseState.bad) {
+      optimisticFlags[responseId] = {
+        flaggedBy: responseState.bad.signaledBy,
+        flaggedAt: responseState.bad.signaledAt,
+      };
+    } else {
+      optimisticFlags = withoutRecordKey(optimisticFlags, responseId);
+    }
+    patchSet({ responseSignals: optimisticSignals, flaggedResponses: optimisticFlags });
+    if (active && previousSignals[responseId]?.[signalType] == null) {
+      emitResponseSignalArrival({
+        conversationId,
+        responseId,
+        signalType,
+        active: true,
+        source: "local",
+        signaledAt: now,
+      });
+    }
     try {
-      const result = await flagResponseApi(conversationId, responseId, flagged);
-      patchSet((state) => ({
-        flaggedResponses: flagged
-          ? { ...state.flaggedResponses, [responseId]: result }
-          : Object.fromEntries(
-              Object.entries(state.flaggedResponses).filter(([id]) => id !== responseId),
-            ),
-      }));
+      const result = await signalResponseApi(conversationId, responseId, signalType, active);
+      patchSet((state) => {
+        let responseSignals = { ...state.responseSignals };
+        if (Object.keys(result.signals).length > 0) responseSignals[responseId] = result.signals;
+        else responseSignals = withoutRecordKey(responseSignals, responseId);
+        let flaggedResponses = { ...state.flaggedResponses };
+        const bad = result.signals.bad;
+        if (bad) {
+          flaggedResponses[responseId] = {
+            flaggedBy: bad.signaledBy,
+            flaggedAt: bad.signaledAt,
+          };
+        } else {
+          flaggedResponses = withoutRecordKey(flaggedResponses, responseId);
+        }
+        return { responseSignals, flaggedResponses };
+      });
     } catch (err) {
-      patchSet({ flaggedResponses: previous });
+      patchSet({ responseSignals: previousSignals, flaggedResponses: previousFlags });
       throw err;
+    }
+  },
+
+  requestResponseHelp: async (responseId) => {
+    const { conversationId } = get();
+    if (!conversationId) return;
+    const requestId = createTransientRequestId();
+    markLocalEffectRequest(requestId);
+    try {
+      await requestResponseHelpApi(conversationId, responseId, requestId);
+    } catch (error) {
+      forgetLocalEffectRequest(requestId);
+      throw error;
+    }
+  },
+
+  requestResponseScreenshot: async (responseId) => {
+    const { conversationId } = get();
+    if (!conversationId) return;
+    const requestId = createTransientRequestId();
+    markLocalEffectRequest(requestId);
+    try {
+      await requestResponseScreenshotApi(conversationId, responseId, requestId);
+    } catch (error) {
+      forgetLocalEffectRequest(requestId);
+      throw error;
     }
   },
 
@@ -3458,6 +3554,7 @@ async function bindStream(
         }[],
         uiSettings: session.uiSettings ?? {},
         flaggedResponses: session.flaggedResponses ?? {},
+        responseSignals: session.responseSignals ?? {},
       };
     });
     // App-global sticky picks: this conversation's snapshot is only allowed to
@@ -3601,6 +3698,7 @@ function reconnectStatusPatch(session: Session, s: ChatState): Partial<ChatState
   // stall watchdog) resyncs them, not just the initial bind.
   patch.uiSettings = session.uiSettings ?? {};
   patch.flaggedResponses = session.flaggedResponses ?? {};
+  patch.responseSignals = session.responseSignals ?? {};
   if (session.contextWindow != null) patch.contextWindow = session.contextWindow;
   if (session.lastTotalTokens != null) patch.tokensUsed = session.lastTotalTokens;
   if (session.totalCostUsd != null) patch.sessionCostUsd = session.totalCostUsd;
@@ -5296,19 +5394,87 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
     case "response_flagged":
       // Live highlight, including mid-stream: responseId is allocated at
       // turn start, before any item is persisted for it.
-      applyToNamedConversation(event.conversationId, (state) => ({
-        flaggedResponses: event.flagged
-          ? {
-              ...state.flaggedResponses,
-              [event.responseId]: {
-                flaggedBy: event.flaggedBy ?? null,
-                flaggedAt: event.flaggedAt,
-              },
-            }
-          : Object.fromEntries(
-              Object.entries(state.flaggedResponses).filter(([id]) => id !== event.responseId),
-            ),
-      }));
+      applyToNamedConversation(event.conversationId, (state) => {
+        let flaggedResponses = { ...state.flaggedResponses };
+        let responseSignals = { ...state.responseSignals };
+        const currentSignals = { ...(responseSignals[event.responseId] ?? {}) };
+        if (event.flagged) {
+          flaggedResponses[event.responseId] = {
+            flaggedBy: event.flaggedBy ?? null,
+            flaggedAt: event.flaggedAt,
+          };
+          delete currentSignals.good;
+          currentSignals.bad = {
+            signalType: "bad",
+            signaledBy: event.flaggedBy ?? null,
+            signaledAt: event.flaggedAt,
+          };
+        } else {
+          flaggedResponses = withoutRecordKey(flaggedResponses, event.responseId);
+          delete currentSignals.bad;
+        }
+        if (Object.keys(currentSignals).length > 0)
+          responseSignals[event.responseId] = currentSignals;
+        else responseSignals = withoutRecordKey(responseSignals, event.responseId);
+        return { flaggedResponses, responseSignals };
+      });
+      return;
+    case "response_signal_changed": {
+      const namedState = sourceConversationId ? setterForState(sourceConversationId) : null;
+      const wasActive =
+        namedState?.responseSignals[event.responseId]?.[event.changedSignal] != null;
+      applyToNamedConversation(event.conversationId, (state) => {
+        let responseSignals = { ...state.responseSignals };
+        if (Object.keys(event.signals).length > 0) {
+          responseSignals[event.responseId] = event.signals;
+        } else {
+          responseSignals = withoutRecordKey(responseSignals, event.responseId);
+        }
+        let flaggedResponses = { ...state.flaggedResponses };
+        const bad = event.signals.bad;
+        if (bad) {
+          flaggedResponses[event.responseId] = {
+            flaggedBy: bad.signaledBy,
+            flaggedAt: bad.signaledAt,
+          };
+        } else {
+          flaggedResponses = withoutRecordKey(flaggedResponses, event.responseId);
+        }
+        return { responseSignals, flaggedResponses };
+      });
+      if (event.active && !wasActive && event.conversationId === sourceConversationId) {
+        emitResponseSignalArrival({
+          conversationId: event.conversationId,
+          responseId: event.responseId,
+          signalType: event.changedSignal,
+          active: true,
+          source: "remote",
+          signaledAt: event.signaledAt,
+        });
+      } else if (!event.active && event.changedSignal === "attention") {
+        emitResponseSignalArrival({
+          conversationId: event.conversationId,
+          responseId: event.responseId,
+          signalType: "attention",
+          active: false,
+          source: "remote",
+          signaledAt: event.signaledAt,
+        });
+      }
+      return;
+    }
+    case "response_help_requested":
+    case "response_screenshot_requested":
+      if (event.conversationId !== sourceConversationId) return;
+      if (consumeLocalEffectRequest(event.requestId)) return;
+      emitResponseEffectArrival({
+        effectType: event.type === "response_help_requested" ? "help" : "screenshot",
+        conversationId: event.conversationId,
+        responseId: event.responseId,
+        requestId: event.requestId,
+        requestedBy: event.requestedBy,
+        requestedAt: event.requestedAt,
+      });
       return;
     case "session_terminal_pending":
       // Toggle the Terminal-pill spinner. The runner sets pending=true

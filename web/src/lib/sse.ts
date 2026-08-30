@@ -54,6 +54,9 @@ import type {
   SessionReasoningEffortEvent,
   SessionUiSettingsEvent,
   ResponseFlaggedEvent,
+  ResponseHelpRequestedEvent,
+  ResponseScreenshotRequestedEvent,
+  ResponseSignalChangedEvent,
   SessionAgentChangedEvent,
   SessionTodosEvent,
   SessionSandboxStatusEvent,
@@ -71,6 +74,7 @@ import type {
   ToolResult,
 } from "./events";
 import { NATIVE_TOOL_TYPES } from "./events";
+import { isResponseSignalType, type ResponseSignalState } from "./responseSignals";
 import { routingExtrasFromWire } from "./routingDecision";
 import type { BackgroundTaskInfo, ErrorInfo, ModelUsage, RememberScope, Response } from "./types";
 
@@ -699,6 +703,97 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
       flaggedBy: flaggedBy ?? null,
       flaggedAt,
     } satisfies ResponseFlaggedEvent;
+  }
+  if (eventType === "response.signal_changed") {
+    const conversationId = data.conversation_id;
+    if (typeof conversationId !== "string" || !conversationId) return null;
+    const responseId = data.response_id;
+    if (typeof responseId !== "string" || !responseId) return null;
+    const changedSignal = data.changed_signal;
+    if (!isResponseSignalType(changedSignal)) return null;
+    const active = data.active;
+    if (typeof active !== "boolean") return null;
+    const signaledAt = data.signaled_at;
+    if (typeof signaledAt !== "number") return null;
+    const signaledBy = data.signaled_by;
+    if (signaledBy !== null && signaledBy !== undefined && typeof signaledBy !== "string") {
+      return null;
+    }
+    const rawSignals = data.signals;
+    if (typeof rawSignals !== "object" || rawSignals === null) return null;
+    const signals: ResponseSignalState = {};
+    for (const [name, raw] of Object.entries(rawSignals)) {
+      if (!isResponseSignalType(name) || typeof raw !== "object" || raw === null) return null;
+      const signal = raw as Record<string, unknown>;
+      if (!isResponseSignalType(signal.signal_type)) return null;
+      if (typeof signal.signaled_at !== "number") return null;
+      if (
+        signal.signaled_by !== null &&
+        signal.signaled_by !== undefined &&
+        typeof signal.signaled_by !== "string"
+      ) {
+        return null;
+      }
+      signals[name] = {
+        signalType: signal.signal_type,
+        signaledBy: (signal.signaled_by as string | null | undefined) ?? null,
+        signaledAt: signal.signaled_at,
+      };
+    }
+    return {
+      type: "response_signal_changed",
+      conversationId,
+      responseId,
+      changedSignal,
+      active,
+      signaledBy: signaledBy ?? null,
+      signaledAt,
+      signals,
+    } satisfies ResponseSignalChangedEvent;
+  }
+  if (eventType === "response.help_requested") {
+    const conversationId = data.conversation_id;
+    if (typeof conversationId !== "string" || !conversationId) return null;
+    const responseId = data.response_id;
+    if (typeof responseId !== "string" || !responseId) return null;
+    const requestId = data.request_id;
+    if (typeof requestId !== "string" || !requestId) return null;
+    const requestedBy = data.requested_by;
+    if (requestedBy !== null && requestedBy !== undefined && typeof requestedBy !== "string") {
+      return null;
+    }
+    const requestedAt = data.requested_at;
+    if (typeof requestedAt !== "number") return null;
+    return {
+      type: "response_help_requested",
+      conversationId,
+      responseId,
+      requestId,
+      requestedBy: requestedBy ?? null,
+      requestedAt,
+    } satisfies ResponseHelpRequestedEvent;
+  }
+  if (eventType === "response.screenshot_requested") {
+    const conversationId = data.conversation_id;
+    if (typeof conversationId !== "string" || !conversationId) return null;
+    const responseId = data.response_id;
+    if (typeof responseId !== "string" || !responseId) return null;
+    const requestId = data.request_id;
+    if (typeof requestId !== "string" || !requestId) return null;
+    const requestedBy = data.requested_by;
+    if (requestedBy !== null && requestedBy !== undefined && typeof requestedBy !== "string") {
+      return null;
+    }
+    const requestedAt = data.requested_at;
+    if (typeof requestedAt !== "number") return null;
+    return {
+      type: "response_screenshot_requested",
+      conversationId,
+      responseId,
+      requestId,
+      requestedBy: requestedBy ?? null,
+      requestedAt,
+    } satisfies ResponseScreenshotRequestedEvent;
   }
   if (eventType === "session.permission_mode") {
     const conversationId = data.conversation_id;

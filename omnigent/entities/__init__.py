@@ -2,6 +2,7 @@
 
 from omnigent.entities.account import Account, AccountToken
 from omnigent.entities.agent import Agent, LoadedAgent
+from omnigent.entities.code_snapshot import CodeSnapshot, SnapshotCaptureType
 from omnigent.entities.comment import Comment, CommentsFingerprint
 from omnigent.entities.conversation import (
     NON_CONTENT_ITEM_TYPES,
@@ -18,6 +19,8 @@ from omnigent.entities.conversation import (
     ReasoningData,
     ResourceEventData,
     ResponseFlag,
+    ResponseSignal,
+    ResponseSignalType,
     RoutingDecisionData,
     SlashCommandData,
     TerminalCommandData,
@@ -45,6 +48,7 @@ __all__ = [
     "Account",
     "AccountToken",
     "Agent",
+    "CodeSnapshot",
     "Comment",
     "CommentsFingerprint",
     "CompactionData",
@@ -66,12 +70,15 @@ __all__ = [
     "ResolvedAccess",
     "ResourceEventData",
     "ResponseFlag",
+    "ResponseSignal",
+    "ResponseSignalType",
     "RoutingDecisionData",
     "ScheduledTask",
     "ScheduledTaskRun",
     "SessionPermission",
     "SessionResourceView",
     "SlashCommandData",
+    "SnapshotCaptureType",
     "StoredFile",
     "TerminalCommandData",
     "filter_resources_by_type",

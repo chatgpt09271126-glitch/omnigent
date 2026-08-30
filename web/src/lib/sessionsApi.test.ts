@@ -19,7 +19,10 @@ import {
   listRunners,
   openSessionStream,
   postEvent,
+  requestResponseHelp,
+  requestResponseScreenshot,
   SESSION_HISTORY_PAGE_SIZE,
+  signalResponse,
   stopSession,
   updateSession,
 } from "./sessionsApi";
@@ -42,6 +45,73 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("signalResponse", () => {
+  it("posts the generalized signal and converts the settled state", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockJsonResponse({
+        changed_signal: "shorter",
+        active: true,
+        signaled_by: "mobile@example.com",
+        signaled_at: 123,
+        signals: {
+          shorter: {
+            signal_type: "shorter",
+            signaled_by: "mobile@example.com",
+            signaled_at: 123,
+          },
+        },
+      }),
+    );
+
+    const result = await signalResponse("conv_a", "resp_a", "shorter", true);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/sessions/conv_a/responses/resp_a/signal",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ signal_type: "shorter", active: true }),
+      }),
+    );
+    expect(result.signals.shorter).toEqual({
+      signalType: "shorter",
+      signaledBy: "mobile@example.com",
+      signaledAt: 123,
+    });
+  });
+});
+
+describe("requestResponseHelp", () => {
+  it("posts only the transient client request id", async () => {
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({ request_id: "help_1" }));
+
+    await requestResponseHelp("conv_a", "resp_a", "help_1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/sessions/conv_a/responses/resp_a/help",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ request_id: "help_1" }),
+      }),
+    );
+  });
+});
+
+describe("requestResponseScreenshot", () => {
+  it("posts only the transient client request id", async () => {
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({ request_id: "screenshot_1" }));
+
+    await requestResponseScreenshot("conv_a", "resp_a", "screenshot_1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/sessions/conv_a/responses/resp_a/screenshot-request",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ request_id: "screenshot_1" }),
+      }),
+    );
+  });
 });
 
 describe("createSession", () => {
@@ -98,6 +168,7 @@ describe("createSession", () => {
       terminalLaunchArgs: null,
       kind: "default",
       backgroundTaskCount: undefined,
+      backgroundTasks: undefined,
       todos: [],
       skills: [],
       codexModelOptions: [],
@@ -105,6 +176,10 @@ describe("createSession", () => {
       sandboxStatus: null,
       mcpStartup: null,
       activeResponseId: null,
+      subagentRoutingOverride: undefined,
+      uiSettings: {},
+      flaggedResponses: {},
+      responseSignals: {},
       workspace: null,
       gitBranch: null,
     });

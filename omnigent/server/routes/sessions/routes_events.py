@@ -209,6 +209,7 @@ from omnigent.session_lifecycle import (
 )
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.artifact_store import ArtifactStore
+from omnigent.stores.code_snapshot_store import CodeSnapshotStore
 from omnigent.stores.file_store import FileStore
 from omnigent.stores.host_store import host_is_live
 from omnigent.stores.permission_store import PermissionStore
@@ -355,6 +356,7 @@ def register_events_routes(
     conversation_store: ConversationStore,
     agent_store: AgentStore,
     file_store: FileStore | None = None,
+    code_snapshot_store: CodeSnapshotStore | None = None,
     artifact_store: ArtifactStore | None = None,
     runner_router: RunnerRouter | None = None,
     auth_provider: AuthProvider | None = None,
@@ -2219,6 +2221,13 @@ def register_events_routes(
             )
             for fid in deleted_file_ids:
                 await asyncio.to_thread(artifact_store.delete, fid)
+        if code_snapshot_store is not None and artifact_store is not None:
+            deleted_snapshots = await asyncio.to_thread(
+                code_snapshot_store.remove_conversation,
+                session_id,
+            )
+            for snapshot in deleted_snapshots:
+                await asyncio.to_thread(artifact_store.delete, snapshot.artifact_key)
         # Opt-in git worktree cleanup: only when delete_branch=true and
         # the session has a server-created worktree. Runs after runner
         # teardown; best-effort (designs/SESSION_GIT_WORKTREE.md).

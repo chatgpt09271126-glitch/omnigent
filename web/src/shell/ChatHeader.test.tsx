@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -11,6 +11,9 @@ import {
   TerminalFirstContextProvider,
   type TerminalFirstContextValue,
 } from "./TerminalFirstContext";
+import { useChatStore } from "@/store/chatStore";
+
+const realUpdateUiSetting = useChatStore.getState().updateUiSetting;
 
 const { isIOSShellMock, isAndroidShellMock } = vi.hoisted(() => ({
   isIOSShellMock: vi.fn(() => false),
@@ -107,6 +110,7 @@ function renderHeader(props: {
 
 afterEach(() => {
   cleanup();
+  useChatStore.setState({ uiSettings: {}, updateUiSetting: realUpdateUiSetting });
   isIOSShellMock.mockReturnValue(false);
   isAndroidShellMock.mockReturnValue(false);
 });
@@ -170,7 +174,41 @@ describe("ChatHeader — thread settings", () => {
       canManageThreadSettings: true,
     });
 
-    expect(screen.getByRole("button", { name: "Thread settings" })).toBeInTheDocument();
+    const settings = screen.getByRole("button", { name: "Thread settings" });
+    expect(settings).toBeInTheDocument();
+    expect(settings).not.toHaveClass("hidden");
+  });
+
+  it("persists the per-thread Interview Mode toggle", () => {
+    const updateUiSetting = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ updateUiSetting });
+    renderHeader({
+      sidebarOpen: true,
+      conversationId: "conv_thread",
+      canManageThreadSettings: true,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Thread settings" }));
+    fireEvent.click(screen.getByTestId("thread-settings-interview-mode"));
+
+    expect(updateUiSetting).toHaveBeenCalledWith("interview_mode", true);
+  });
+
+  it("shows response flagging as included while Interview Mode is enabled", () => {
+    useChatStore.setState({ uiSettings: { interview_mode: true, response_flagging: false } });
+    renderHeader({
+      sidebarOpen: true,
+      conversationId: "conv_thread",
+      canManageThreadSettings: true,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Thread settings" }));
+
+    expect(screen.getByTestId("thread-settings-flag-responses")).toHaveAttribute(
+      "data-state",
+      "checked",
+    );
+    expect(screen.getByTestId("thread-settings-flag-responses")).toBeDisabled();
   });
 });
 

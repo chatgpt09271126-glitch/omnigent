@@ -49,11 +49,19 @@ import { useCallback, useEffect, useRef } from "react";
  */
 function ThreadSettingsButton({ canEdit }: { canEdit: boolean }) {
   const responseFlagging = useChatStore((s) => s.uiSettings.response_flagging === true);
+  const interviewMode = useChatStore((s) => s.uiSettings.interview_mode === true);
 
   function toggleResponseFlagging(checked: boolean) {
     void useChatStore
       .getState()
       .updateUiSetting("response_flagging", checked)
+      .catch(() => {});
+  }
+
+  function toggleInterviewMode(checked: boolean) {
+    void useChatStore
+      .getState()
+      .updateUiSetting("interview_mode", checked)
       .catch(() => {});
   }
 
@@ -68,7 +76,7 @@ function ThreadSettingsButton({ canEdit }: { canEdit: boolean }) {
               size="icon"
               aria-label="Thread settings"
               data-testid="thread-settings-trigger"
-              className="hidden text-muted-foreground hover:text-foreground md:inline-flex"
+              className="text-muted-foreground hover:text-foreground"
             >
               <SlidersHorizontalIcon className="size-4" />
             </Button>
@@ -83,14 +91,28 @@ function ThreadSettingsButton({ canEdit }: { canEdit: boolean }) {
           </span>
           <label className="flex items-center justify-between gap-3">
             <span className="flex flex-col gap-0.5">
+              <span className="text-ui">Interview Mode</span>
+              <span className="text-sm text-muted-foreground">
+                Enables live response signals and the focused mobile companion.
+              </span>
+            </span>
+            <Switch
+              checked={interviewMode}
+              disabled={!canEdit}
+              onCheckedChange={toggleInterviewMode}
+              data-testid="thread-settings-interview-mode"
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3">
+            <span className="flex flex-col gap-0.5">
               <span className="text-ui">Flag responses</span>
               <span className="text-sm text-muted-foreground">
                 Lets an operator highlight a response for every viewer, live.
               </span>
             </span>
             <Switch
-              checked={responseFlagging}
-              disabled={!canEdit}
+              checked={responseFlagging || interviewMode}
+              disabled={!canEdit || interviewMode}
               onCheckedChange={toggleResponseFlagging}
               data-testid="thread-settings-flag-responses"
             />
@@ -229,6 +251,8 @@ interface ChatHeaderProps {
   onToggleRightPanel: () => void;
   /** Gating + handlers for the mobile session-menu FAB. */
   mobileMenu: MobileSessionMenuProps;
+  /** Narrow Interview Mode hides developer-oriented mobile surfaces. */
+  mobileInterviewMode?: boolean;
 }
 
 /**
@@ -274,15 +298,23 @@ export function ChatHeader({
   rightPanelOpen,
   onToggleRightPanel,
   mobileMenu,
+  mobileInterviewMode = false,
 }: ChatHeaderProps) {
   // Mirrors ThreadSettingsButton's own read for the mobile checkbox-item
   // fallback (that popover is desktop-only; the mobile three-dot menu needs
   // the same live value to render its check state).
   const responseFlagging = useChatStore((s) => s.uiSettings.response_flagging === true);
+  const interviewMode = useChatStore((s) => s.uiSettings.interview_mode === true);
   function toggleResponseFlagging(checked: boolean) {
     void useChatStore
       .getState()
       .updateUiSetting("response_flagging", checked)
+      .catch(() => {});
+  }
+  function toggleInterviewMode(checked: boolean) {
+    void useChatStore
+      .getState()
+      .updateUiSetting("interview_mode", checked)
       .catch(() => {});
   }
 
@@ -378,21 +410,21 @@ export function ChatHeader({
         {conversationId && (conversationTitle || titleLinkTo) && (
           <ConversationBreadcrumb
             conversationTitle={conversationTitle ?? UNTITLED_CONVERSATION_LABEL}
-            projectName={projectName}
+            projectName={mobileInterviewMode ? null : projectName}
             titleLinkTo={titleLinkTo}
             isChildSession={isChildSession}
             boundAgent={boundAgent}
             wrapperLabel={wrapperLabel}
             actions={
-              actionConversation ? (
+              actionConversation && !mobileInterviewMode ? (
                 <HeaderConversationMenu
                   conversation={actionConversation}
                   currentProject={projectName}
-                  canShare={canShare}
+                  canShare={canShare && !mobileInterviewMode}
                   shareDisabled={shareDisabled}
                   shareDisabledReason={shareDisabledReason}
                   onShare={onShare}
-                  hasAgentInfo={isMobile && hasAgentInfo}
+                  hasAgentInfo={isMobile && hasAgentInfo && !mobileInterviewMode}
                   onAgentInfo={onAgentInfo}
                 />
               ) : undefined
@@ -414,13 +446,14 @@ export function ChatHeader({
             "Fork from here" action on assistant bubbles (ChatPage). */}
         {/* Agent info: tools & policies for the bound agent. Desktop-only
             popover; self-hides when the agent has neither configured. */}
-        {conversationId && <AgentInfoButton agent={boundAgent} sessionId={conversationId} />}
+        {conversationId && !mobileInterviewMode && (
+          <AgentInfoButton agent={boundAgent} sessionId={conversationId} />
+        )}
         {/* Chat/Terminal switcher for terminal-first sessions — self-gates to
             null otherwise (and in the iOS shell, where it's the native bar). */}
-        {conversationId && <ViewModeToggle />}
-        {/* Per-thread feature toggles (currently just "Flag responses").
-            Desktop-only popover; the mobile equivalent is the checkbox item
-            below, folded into the three-dot menu. */}
+        {conversationId && !mobileInterviewMode && <ViewModeToggle />}
+        {/* Per-thread feature toggles. Kept directly reachable on mobile so
+            Interview Mode can be enabled or disabled from its minimal shell. */}
         {conversationId && <ThreadSettingsButton canEdit={canManageThreadSettings} />}
         {/* Mobile-only three-dot menu folding the action buttons above
             (Share · Agent info) so the header stays
@@ -441,7 +474,7 @@ export function ChatHeader({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-44">
-              {canShare && (
+              {canShare && !mobileInterviewMode && (
                 <DropdownMenuItem
                   onSelect={
                     shareDisabled
@@ -460,7 +493,7 @@ export function ChatHeader({
                   Share
                 </DropdownMenuItem>
               )}
-              {hasAgentInfo && (
+              {hasAgentInfo && !mobileInterviewMode && (
                 <DropdownMenuItem
                   onSelect={() => {
                     trackClick("chat.header.mobile_agent_info", "button");
@@ -474,6 +507,17 @@ export function ChatHeader({
                 </DropdownMenuItem>
               )}
               {canManageThreadSettings && (
+                <DropdownMenuCheckboxItem
+                  checked={interviewMode}
+                  onCheckedChange={toggleInterviewMode}
+                  data-testid="mobile-interview-mode-toggle"
+                  className="gap-2.5 px-2.5 py-2 text-ui"
+                >
+                  <SlidersHorizontalIcon className="size-4" />
+                  Interview Mode
+                </DropdownMenuCheckboxItem>
+              )}
+              {canManageThreadSettings && !mobileInterviewMode && (
                 <DropdownMenuCheckboxItem
                   checked={responseFlagging}
                   onCheckedChange={toggleResponseFlagging}
@@ -566,6 +610,7 @@ export function ChatHeader({
             terminal renders inline in main — so the FAB stays
             available there. */}
         {conversationId &&
+          !mobileInterviewMode &&
           !mobileMenu.fileViewerOpen &&
           (!mobileMenu.panelOpen || mobileMenu.terminalFirst) &&
           !mobileMenu.executionLogsOpen &&

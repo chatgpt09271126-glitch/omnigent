@@ -1,9 +1,11 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { CodeSnapshotToolbarControls } from "@/components/code-snapshots/CodeSnapshots";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getEmbedRoot } from "@/lib/host";
 import { cn } from "@/lib/utils";
+import { onResponseSignalNavigation } from "@/lib/responseSignals";
 import {
   Maximize2Icon,
   MinusIcon,
@@ -23,6 +25,7 @@ const ZOOM_STEP = 0.1;
 interface CodeFocusViewerProps {
   renderedCode: ReactNode;
   initialWrap: boolean;
+  snapshotsEnabled?: boolean;
 }
 
 interface ScrollPosition {
@@ -199,7 +202,11 @@ function restoreZoomAnchor(viewport: HTMLElement, anchor: ZoomAnchor): void {
   viewport.scrollTop = anchor.contentYRatio * viewport.scrollHeight - localY;
 }
 
-export function CodeFocusViewer({ renderedCode, initialWrap }: CodeFocusViewerProps) {
+export function CodeFocusViewer({
+  renderedCode,
+  initialWrap,
+  snapshotsEnabled = false,
+}: CodeFocusViewerProps) {
   const [open, setOpen] = useState(false);
   const [wrap, setWrap] = useState(initialWrap);
   const [zoom, setZoom] = useState(1);
@@ -371,6 +378,8 @@ export function CodeFocusViewer({ renderedCode, initialWrap }: CodeFocusViewerPr
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [applyZoom, open]);
 
+  useEffect(() => onResponseSignalNavigation(() => setOpen(false)), []);
+
   const displayedZoom = Math.round((zoom * 100) / 5) * 5;
 
   return (
@@ -418,7 +427,13 @@ export function CodeFocusViewer({ renderedCode, initialWrap }: CodeFocusViewerPr
                   ref={wrapButtonRef}
                   aria-label={wrap ? "Disable word wrap" : "Enable word wrap"}
                   aria-pressed={wrap}
-                  className={cn("h-10 px-2", wrap && "text-foreground")}
+                  className={cn(
+                    "h-10 px-2 transition-[opacity,background-color,color]",
+                    wrap
+                      ? "bg-foreground/10 text-foreground hover:bg-foreground/15"
+                      : "text-muted-foreground opacity-50 hover:opacity-80",
+                  )}
+                  data-state={wrap ? "on" : "off"}
                   onClick={toggleWrap}
                   size="sm"
                   type="button"
@@ -469,6 +484,18 @@ export function CodeFocusViewer({ renderedCode, initialWrap }: CodeFocusViewerPr
                 </Button>
               </div>
             </div>
+            {snapshotsEnabled && (
+              <div className="flex shrink-0 items-center gap-0.5">
+                <CodeSnapshotToolbarControls
+                  className="size-10"
+                  getQuickCaptureTarget={() =>
+                    viewportRef.current?.querySelector<HTMLElement>(
+                      '[data-streamdown="code-block-body"]',
+                    ) ?? null
+                  }
+                />
+              </div>
+            )}
             <DialogPrimitive.Close asChild>
               <Button
                 aria-label="Close code focus mode"

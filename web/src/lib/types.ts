@@ -13,6 +13,7 @@
 import type { ConversationItem } from "./conversationItems";
 import type { McpServerStartup } from "./events";
 import type { MessageContentBlock } from "./blocks";
+import type { ResponseSignalsByResponse } from "./responseSignals";
 
 /** Reference to a conversation, as returned on response objects. */
 export interface ConversationRef {
@@ -517,6 +518,8 @@ export interface Session {
    * client opening the thread fresh, not just live.
    */
   flaggedResponses?: Record<string, { flaggedBy: string | null; flaggedAt: number }>;
+  /** Generalized human signals keyed by stable response id. */
+  responseSignals?: ResponseSignalsByResponse;
 }
 
 /**

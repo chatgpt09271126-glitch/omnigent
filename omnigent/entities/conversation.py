@@ -272,6 +272,18 @@ class ResponseFlag:
     flagged_at: int
 
 
+ResponseSignalType = Literal["bad", "good", "attention", "shorter", "more_detail"]
+
+
+@dataclass(frozen=True)
+class ResponseSignal:
+    """One active human response signal and its attribution."""
+
+    signal_type: ResponseSignalType
+    signaled_by: str | None
+    signaled_at: int
+
+
 # ── Conversation item data types ───────────────────────
 
 

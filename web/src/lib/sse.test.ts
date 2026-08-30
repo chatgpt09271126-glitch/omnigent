@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseEvent, withStallGuard } from "./sse";
 import type {
   ResponseFlaggedEvent,
+  ResponseSignalChangedEvent,
+  ResponseHelpRequestedEvent,
+  ResponseScreenshotRequestedEvent,
   SessionStatusEvent,
   SessionSupersededEvent,
   SessionUiSettingsEvent,
@@ -194,6 +197,79 @@ describe("parseEvent — thread settings and response flags", () => {
       flaggedBy: "operator@example.com",
       flaggedAt: 123,
     } satisfies ResponseFlaggedEvent);
+  });
+
+  it("parses a generalized signal event with complete settled state", () => {
+    expect(
+      parseEvent("response.signal_changed", {
+        conversation_id: "conv_a",
+        response_id: "resp_streaming",
+        changed_signal: "attention",
+        active: true,
+        signaled_by: "mobile@example.com",
+        signaled_at: 124,
+        signals: {
+          attention: {
+            signal_type: "attention",
+            signaled_by: "mobile@example.com",
+            signaled_at: 124,
+          },
+        },
+      }),
+    ).toEqual({
+      type: "response_signal_changed",
+      conversationId: "conv_a",
+      responseId: "resp_streaming",
+      changedSignal: "attention",
+      active: true,
+      signaledBy: "mobile@example.com",
+      signaledAt: 124,
+      signals: {
+        attention: {
+          signalType: "attention",
+          signaledBy: "mobile@example.com",
+          signaledAt: 124,
+        },
+      },
+    } satisfies ResponseSignalChangedEvent);
+  });
+
+  it("parses a transient response Help event", () => {
+    expect(
+      parseEvent("response.help_requested", {
+        conversation_id: "conv_a",
+        response_id: "resp_a",
+        request_id: "help_1",
+        requested_by: "mobile@example.com",
+        requested_at: 125,
+      }),
+    ).toEqual({
+      type: "response_help_requested",
+      conversationId: "conv_a",
+      responseId: "resp_a",
+      requestId: "help_1",
+      requestedBy: "mobile@example.com",
+      requestedAt: 125,
+    } satisfies ResponseHelpRequestedEvent);
+  });
+
+  it("parses a transient response screenshot request event", () => {
+    expect(
+      parseEvent("response.screenshot_requested", {
+        conversation_id: "conv_a",
+        response_id: "resp_a",
+        request_id: "screenshot_1",
+        requested_by: "mobile@example.com",
+        requested_at: 126,
+      }),
+    ).toEqual({
+      type: "response_screenshot_requested",
+      conversationId: "conv_a",
+      responseId: "resp_a",
+      requestId: "screenshot_1",
+      requestedBy: "mobile@example.com",
+      requestedAt: 126,
+    } satisfies ResponseScreenshotRequestedEvent);
   });
 
   it("rejects malformed thread-state events", () => {

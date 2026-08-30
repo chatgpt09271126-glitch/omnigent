@@ -290,6 +290,51 @@
         "title": "BackgroundTaskInfo",
         "type": "object"
       },
+      "Body_create_code_snapshot_v1_sessions__session_id__code_snapshots_post": {
+        "properties": {
+          "capture_type": {
+            "title": "Capture Type",
+            "type": "string"
+          },
+          "code_block_start_offset": {
+            "title": "Code Block Start Offset",
+            "type": "integer"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "response_id": {
+            "title": "Response Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "response_id",
+          "item_id",
+          "code_block_start_offset",
+          "capture_type"
+        ],
+        "title": "Body_create_code_snapshot_v1_sessions__session_id__code_snapshots_post",
+        "type": "object"
+      },
       "Body_update_session_agent_v1_sessions__session_id__agent_put": {
         "properties": {
           "bundle": {
@@ -3330,6 +3375,22 @@
         "title": "ReasoningTextDeltaEvent",
         "type": "object"
       },
+      "RequestResponseEffectRequest": {
+        "description": "Client nonce for one transient human-to-human effect.",
+        "properties": {
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "title": "RequestResponseEffectRequest",
+        "type": "object"
+      },
       "ResourceEventData": {
         "description": "Data payload for a persisted resource lifecycle event.\n\nThese items are written to the conversation store when a\nsession resource is created or deleted, so reconnecting\nclients can discover resource history without replaying the\nlive SSE stream.  The agent loop filters them out of the\nLLM's message context (they are metadata, not conversation\ncontent).",
         "properties": {
@@ -3433,6 +3494,63 @@
           "flagged_at"
         ],
         "title": "ResponseFlaggedEvent",
+        "type": "object"
+      },
+      "ResponseHelpRequestedEvent": {
+        "description": "Momentary human Help effect associated with an assistant response.\n\nCategory: **transient** (SSE-only). Help is intentionally not restored from\nsnapshots or replayed after reconnect because it represents a live request\nfor the other participant's immediate attention.",
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "requested_at": {
+            "title": "Requested At",
+            "type": "integer"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "response_id": {
+            "title": "Response Id",
+            "type": "string"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "type": {
+            "const": "response.help_requested",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "conversation_id",
+          "response_id",
+          "request_id",
+          "requested_at"
+        ],
+        "title": "ResponseHelpRequestedEvent",
         "type": "object"
       },
       "ResponseObject": {
@@ -3596,6 +3714,255 @@
           "created_at"
         ],
         "title": "ResponseObject",
+        "type": "object"
+      },
+      "ResponseScreenshotRequestedEvent": {
+        "description": "Momentary human request for a readability screenshot.\n\nCategory: **transient** (SSE-only). Like Help, this effect is not restored\nfrom snapshots or replayed after reconnect.",
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "requested_at": {
+            "title": "Requested At",
+            "type": "integer"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "response_id": {
+            "title": "Response Id",
+            "type": "string"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "type": {
+            "const": "response.screenshot_requested",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "conversation_id",
+          "response_id",
+          "request_id",
+          "requested_at"
+        ],
+        "title": "ResponseScreenshotRequestedEvent",
+        "type": "object"
+      },
+      "ResponseSignalChangedEvent": {
+        "description": "One response signal changed, carrying the complete settled state.\n\nCategory: **transient** (SSE-only). Session snapshots restore the current\nstate after reconnect; clients must not replay arrival effects from a\nsnapshot.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "changed_signal": {
+            "enum": [
+              "bad",
+              "good",
+              "attention",
+              "shorter",
+              "more_detail"
+            ],
+            "title": "Changed Signal",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "response_id": {
+            "title": "Response Id",
+            "type": "string"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sequence Number"
+          },
+          "signaled_at": {
+            "title": "Signaled At",
+            "type": "integer"
+          },
+          "signaled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Signaled By"
+          },
+          "signals": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ResponseSignalInfo"
+            },
+            "propertyNames": {
+              "enum": [
+                "bad",
+                "good",
+                "attention",
+                "shorter",
+                "more_detail"
+              ]
+            },
+            "title": "Signals",
+            "type": "object"
+          },
+          "type": {
+            "const": "response.signal_changed",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "conversation_id",
+          "response_id",
+          "changed_signal",
+          "active",
+          "signaled_at"
+        ],
+        "title": "ResponseSignalChangedEvent",
+        "type": "object"
+      },
+      "ResponseSignalInfo": {
+        "description": "One active human signal attached to an assistant response.",
+        "properties": {
+          "signal_type": {
+            "enum": [
+              "bad",
+              "good",
+              "attention",
+              "shorter",
+              "more_detail"
+            ],
+            "title": "Signal Type",
+            "type": "string"
+          },
+          "signaled_at": {
+            "title": "Signaled At",
+            "type": "integer"
+          },
+          "signaled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signaled By"
+          }
+        },
+        "required": [
+          "signal_type",
+          "signaled_at"
+        ],
+        "title": "ResponseSignalInfo",
+        "type": "object"
+      },
+      "ResponseSignalMutationResponse": {
+        "description": "Settled signal state returned after one signal mutation.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "changed_signal": {
+            "enum": [
+              "bad",
+              "good",
+              "attention",
+              "shorter",
+              "more_detail"
+            ],
+            "title": "Changed Signal",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "response_id": {
+            "title": "Response Id",
+            "type": "string"
+          },
+          "signaled_at": {
+            "title": "Signaled At",
+            "type": "integer"
+          },
+          "signaled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signaled By"
+          },
+          "signals": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ResponseSignalInfo"
+            },
+            "propertyNames": {
+              "enum": [
+                "bad",
+                "good",
+                "attention",
+                "shorter",
+                "more_detail"
+              ]
+            },
+            "title": "Signals",
+            "type": "object"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "response_id",
+          "changed_signal",
+          "active",
+          "signaled_at"
+        ],
+        "title": "ResponseSignalMutationResponse",
         "type": "object"
       },
       "RetryErrorDetail": {
@@ -4025,6 +4392,7 @@
             "response.flagged": "#/components/schemas/ResponseFlaggedEvent",
             "response.function_call_output.delta": "#/components/schemas/ToolOutputDeltaEvent",
             "response.heartbeat": "#/components/schemas/HeartbeatEvent",
+            "response.help_requested": "#/components/schemas/ResponseHelpRequestedEvent",
             "response.in_progress": "#/components/schemas/InProgressEvent",
             "response.incomplete": "#/components/schemas/IncompleteEvent",
             "response.output_file.done": "#/components/schemas/OutputFileDoneEvent",
@@ -4036,6 +4404,8 @@
             "response.reasoning_summary_text.delta": "#/components/schemas/ReasoningSummaryTextDeltaEvent",
             "response.reasoning_text.delta": "#/components/schemas/ReasoningTextDeltaEvent",
             "response.retry": "#/components/schemas/RetryEvent",
+            "response.screenshot_requested": "#/components/schemas/ResponseScreenshotRequestedEvent",
+            "response.signal_changed": "#/components/schemas/ResponseSignalChangedEvent",
             "session.agent_changed": "#/components/schemas/SessionAgentChangedEvent",
             "session.changed_files.invalidated": "#/components/schemas/SessionChangedFilesInvalidatedEvent",
             "session.child_session.updated": "#/components/schemas/SessionChildSessionUpdatedEvent",
@@ -4186,6 +4556,15 @@
           },
           {
             "$ref": "#/components/schemas/ResponseFlaggedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ResponseSignalChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ResponseHelpRequestedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ResponseScreenshotRequestedEvent"
           },
           {
             "$ref": "#/components/schemas/CreatedEvent"
@@ -5903,6 +6282,25 @@
             "description": "Per-session reasoning-effort hint. Accepted metadata values are `\"none\"`, `\"minimal\"`, `\"low\"`, `\"medium\"`, `\"high\"`, `\"xhigh\"`, and `\"max\"`. Provider-specific support is validated when a turn executes. `None` means use the agent default.",
             "title": "Reasoning Effort"
           },
+          "response_signals": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/ResponseSignalInfo"
+              },
+              "propertyNames": {
+                "enum": [
+                  "bad",
+                  "good",
+                  "attention",
+                  "shorter",
+                  "more_detail"
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Response Signals",
+            "type": "object"
+          },
           "root_conversation_id": {
             "anyOf": [
               {
@@ -6831,6 +7229,32 @@
           "flagged"
         ],
         "title": "SetResponseFlagRequest",
+        "type": "object"
+      },
+      "SetResponseSignalRequest": {
+        "description": "Request body for the generalized response-signal endpoint.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "signal_type": {
+            "enum": [
+              "bad",
+              "good",
+              "attention",
+              "shorter",
+              "more_detail"
+            ],
+            "title": "Signal Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal_type",
+          "active"
+        ],
+        "title": "SetResponseSignalRequest",
         "type": "object"
       },
       "SetSharingRequest": {
@@ -10510,6 +10934,219 @@
         ]
       }
     },
+    "/v1/sessions/{session_id}/code-snapshots": {
+      "get": {
+        "operationId": "list_code_snapshots_v1_sessions__session_id__code_snapshots_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "response_id",
+            "required": true,
+            "schema": {
+              "title": "Response Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code_block_start_offset",
+            "required": true,
+            "schema": {
+              "title": "Code Block Start Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Code Snapshots",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "post": {
+        "operationId": "create_code_snapshot_v1_sessions__session_id__code_snapshots_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_code_snapshot_v1_sessions__session_id__code_snapshots_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Code Snapshot",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/code-snapshots/{snapshot_id}": {
+      "delete": {
+        "operationId": "delete_code_snapshot_v1_sessions__session_id__code_snapshots__snapshot_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Code Snapshot",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/code-snapshots/{snapshot_id}/content": {
+      "get": {
+        "operationId": "get_code_snapshot_content_v1_sessions__session_id__code_snapshots__snapshot_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Code Snapshot Content",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
     "/v1/sessions/{session_id}/codex_goal": {
       "delete": {
         "description": "Clear the current Codex app-server goal.\n\n**Returns:** Whether Codex removed an existing goal.\n\n**Raises**\n\n- `OmnigentError` \u2014 400 for non-Codex sessions, 404 for missing sessions, or 503 when no live Codex runner can clear the goal.",
@@ -13279,6 +13916,192 @@
           }
         },
         "summary": "Set Response Flag",
+        "tags": [
+          "response_flags"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/responses/{response_id}/help": {
+      "post": {
+        "description": "Broadcast a one-shot human Help effect without prompting the agent.",
+        "operationId": "request_response_help_v1_sessions__session_id__responses__response_id__help_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "response_id",
+            "required": true,
+            "schema": {
+              "title": "Response Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestResponseEffectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseHelpRequestedEvent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Response Help",
+        "tags": [
+          "response_flags"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/responses/{response_id}/screenshot-request": {
+      "post": {
+        "description": "Broadcast a one-shot request for a human-provided screenshot.",
+        "operationId": "request_response_screenshot_v1_sessions__session_id__responses__response_id__screenshot_request_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "response_id",
+            "required": true,
+            "schema": {
+              "title": "Response Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestResponseEffectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseScreenshotRequestedEvent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Response Screenshot",
+        "tags": [
+          "response_flags"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/responses/{response_id}/signal": {
+      "post": {
+        "description": "Set or clear a human signal on a stable assistant response.",
+        "operationId": "set_response_signal_v1_sessions__session_id__responses__response_id__signal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "response_id",
+            "required": true,
+            "schema": {
+              "title": "Response Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetResponseSignalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseSignalMutationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Response Signal",
         "tags": [
           "response_flags"
         ]

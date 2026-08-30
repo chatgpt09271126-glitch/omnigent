@@ -13,6 +13,8 @@ from omnigent.entities import (
     NewConversationItem,
     PagedList,
     ResponseFlag,
+    ResponseSignal,
+    ResponseSignalType,
 )
 from omnigent.session_import import IMPORT_PROVENANCE_LABEL_KEYS
 
@@ -557,6 +559,11 @@ class ConversationStore(ABC):
         ...
 
     @abstractmethod
+    def get_item(self, conversation_id: str, item_id: str) -> ConversationItem | None:
+        """Return one item scoped to its conversation, or ``None``."""
+        ...
+
+    @abstractmethod
     def list_latest_message_items_for_conversations(
         self,
         conversation_ids: list[str],
@@ -983,6 +990,32 @@ class ConversationStore(ABC):
         :returns: Mapping of ``response_id`` to :class:`ResponseFlag`.
             Empty when no response in the conversation is flagged.
         """
+        ...
+
+    @abstractmethod
+    def set_response_signal(
+        self,
+        conversation_id: str,
+        response_id: str,
+        signal_type: ResponseSignalType,
+        active: bool,
+        signaled_by: str | None,
+        at: int | None = None,
+    ) -> dict[ResponseSignalType, ResponseSignal]:
+        """Set or clear one response signal and return the settled state.
+
+        Quality and detail signals are mutually exclusive. ``bad`` composes
+        with the legacy response-flag table so existing production flags stay
+        authoritative and old clients remain compatible.
+        """
+        ...
+
+    @abstractmethod
+    def list_response_signals(
+        self,
+        conversation_id: str,
+    ) -> dict[str, dict[ResponseSignalType, ResponseSignal]]:
+        """Return active generalized signals keyed by response id and type."""
         ...
 
     @abstractmethod

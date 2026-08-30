@@ -4,13 +4,15 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
+import type { CodeSnapshotOrigin } from "@/lib/codeSnapshotsApi";
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, WrapTextIcon } from "lucide-react";
-import type { ComponentProps, HTMLAttributes, ReactElement, ReactNode } from "react";
+import type { ComponentProps, ComponentType, HTMLAttributes, ReactElement, ReactNode } from "react";
 import {
   cloneElement,
   createContext,
+  forwardRef,
   isValidElement,
   memo,
   useCallback,
@@ -20,7 +22,20 @@ import {
   useRef,
   useState,
 } from "react";
-import { Streamdown, type StreamdownProps } from "streamdown";
+import {
+  Block as StreamdownBlock,
+  type BlockProps as StreamdownBlockProps,
+  parseMarkdownIntoBlocks,
+  Streamdown,
+  type ExtraProps,
+  type StreamdownProps,
+} from "streamdown";
+
+import {
+  CodeSnapshotBlockProvider,
+  CodeSnapshotDropZone,
+  CodeSnapshotToolbarControls,
+} from "@/components/code-snapshots/CodeSnapshots";
 
 import {
   CHAT_LINK_SAFETY,
@@ -79,43 +94,41 @@ export type MessageActionProps = ComponentProps<typeof Button> & {
   label?: string;
 };
 
-export const MessageAction = ({
-  tooltip,
-  children,
-  label,
-  className,
-  variant = "ghost",
-  size = "icon-sm",
-  ...props
-}: MessageActionProps) => {
-  const button = (
-    <Button
-      size={size}
-      type="button"
-      variant={variant}
-      className={cn("text-muted-foreground hover:text-foreground", className)}
-      {...props}
-    >
-      {children}
-      <span className="sr-only">{label || tooltip}</span>
-    </Button>
-  );
-
-  if (tooltip) {
-    return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>{button}</TooltipTrigger>
-          <TooltipContent>
-            <p>{tooltip}</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+export const MessageAction = forwardRef<HTMLButtonElement, MessageActionProps>(
+  function MessageAction(
+    { tooltip, children, label, className, variant = "ghost", size = "icon-sm", ...props },
+    ref,
+  ) {
+    const button = (
+      <Button
+        ref={ref}
+        size={size}
+        type="button"
+        variant={variant}
+        className={cn("text-muted-foreground hover:text-foreground", className)}
+        {...props}
+      >
+        {children}
+        <span className="sr-only">{label || tooltip}</span>
+      </Button>
     );
-  }
 
-  return button;
-};
+    if (tooltip) {
+      return (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>{button}</TooltipTrigger>
+            <TooltipContent>
+              <p>{tooltip}</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      );
+    }
+
+    return button;
+  },
+);
 
 interface MessageBranchContextType {
   currentBranch: number;
@@ -303,7 +316,49 @@ export type MessageResponseProps = Omit<StreamdownProps, "rehypePlugins"> & {
    * Opt-in: only callers that supply that override may set it.
    */
   markFileLinks?: boolean;
+  codeSnapshotContext?: Omit<CodeSnapshotOrigin, "codeBlockStartOffset" | "language"> | null;
 };
+
+const CodeSnapshotRenderContext = createContext<MessageResponseProps["codeSnapshotContext"]>(null);
+const CodeSnapshotBlockStartContext = createContext<number | null>(null);
+
+interface CodeSnapshotBlockRenderContextValue {
+  blockComponent: ComponentType<StreamdownBlockProps>;
+  blockStartOffsets: readonly number[];
+}
+
+const CodeSnapshotBlockRenderContext = createContext<CodeSnapshotBlockRenderContextValue | null>(
+  null,
+);
+
+function DefaultStreamdownBlock(props: StreamdownBlockProps) {
+  return <StreamdownBlock {...props} />;
+}
+
+function CodeSnapshotStreamdownBlock(props: StreamdownBlockProps) {
+  const context = useContext(CodeSnapshotBlockRenderContext);
+  const BlockComponent = context?.blockComponent ?? DefaultStreamdownBlock;
+  const blockStartOffset = context?.blockStartOffsets[props.index] ?? null;
+
+  return (
+    <CodeSnapshotBlockStartContext.Provider value={blockStartOffset}>
+      <BlockComponent {...props} />
+    </CodeSnapshotBlockStartContext.Provider>
+  );
+}
+
+function getMarkdownBlockStartOffsets(
+  markdown: string,
+  parseBlocks: (markdown: string) => string[],
+): number[] {
+  let nextOffset = 0;
+  return parseBlocks(markdown).map((block) => {
+    const foundOffset = markdown.indexOf(block, nextOffset);
+    const blockStartOffset = foundOffset >= 0 ? foundOffset : nextOffset;
+    nextOffset = blockStartOffset + block.length;
+    return blockStartOffset;
+  });
+}
 
 function getChatCodeControls(controls: StreamdownProps["controls"]): StreamdownProps["controls"] {
   if (typeof controls === "object" && controls !== null) {
@@ -339,6 +394,33 @@ function extractCodeText(children: ReactNode): string {
   }
 
   return "";
+}
+
+function extractCodeLanguage(children: ReactNode): string | null {
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      const language = extractCodeLanguage(child);
+      if (language) return language;
+    }
+  }
+  if (isValidElement(children)) {
+    const props = children.props as {
+      children?: ReactNode;
+      className?: unknown;
+      language?: unknown;
+      "data-language"?: unknown;
+    };
+    if (typeof props.language === "string" && props.language) return props.language;
+    if (typeof props["data-language"] === "string" && props["data-language"]) {
+      return props["data-language"];
+    }
+    if (typeof props.className === "string") {
+      const match = props.className.match(/(?:^|\s)language-([^\s]+)/);
+      if (match?.[1]) return match[1];
+    }
+    return extractCodeLanguage(props.children);
+  }
+  return null;
 }
 
 // Shared visual style for the buttons overlaid on a chat code block (copy,
@@ -413,8 +495,17 @@ function ChatCodeBlockWrapToggle({ wrap, onToggle }: { wrap: boolean; onToggle: 
   );
 }
 
-function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
+function ChatCodeBlockPre({ children, node }: ComponentProps<"pre"> & ExtraProps) {
+  const snapshotContext = useContext(CodeSnapshotRenderContext);
+  const streamdownBlockStartOffset = useContext(CodeSnapshotBlockStartContext);
+  const localCodeBlockStartOffset = node?.position?.start.offset ?? null;
+  const codeBlockStartOffset =
+    streamdownBlockStartOffset !== null && localCodeBlockStartOffset !== null
+      ? streamdownBlockStartOffset + localCodeBlockStartOffset
+      : null;
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const code = extractCodeText(children);
+  const language = extractCodeLanguage(children);
   const getCode = useCallback(() => code, [code]);
   // Soft-wrap long lines by default so users don't have to scroll horizontally
   // to read code blocks. The toggle restores Streamdown's native
@@ -425,7 +516,7 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
     ? cloneElement(children, { "data-block": "true" } as Record<string, unknown>)
     : children;
 
-  return (
+  const rendered = (
     <div className={cn("relative", wrap && "chat-code-wrap")}>
       {block}
       {/* Overlay actions, anchored left of Streamdown's own download button
@@ -433,41 +524,97 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
           self-arrange, so neither needs a hardcoded horizontal offset. */}
       <div className="absolute top-2 right-12 z-10 flex items-center gap-1">
         <ChatCodeBlockWrapToggle onToggle={toggleWrap} wrap={wrap} />
-        <CodeFocusViewer initialWrap={wrap} renderedCode={block} />
+        <CodeFocusViewer
+          initialWrap={wrap}
+          renderedCode={block}
+          snapshotsEnabled={Boolean(snapshotContext && codeBlockStartOffset !== null)}
+        />
+        {snapshotContext && codeBlockStartOffset !== null && (
+          <CodeSnapshotToolbarControls
+            className={CODE_BLOCK_OVERLAY_BUTTON_CLASS}
+            getQuickCaptureTarget={() =>
+              wrapperRef.current?.querySelector<HTMLElement>(
+                '[data-streamdown="code-block-body"]',
+              ) ?? null
+            }
+          />
+        )}
         <ChatCodeBlockCopyButton getCode={getCode} />
       </div>
     </div>
   );
+
+  if (!snapshotContext || codeBlockStartOffset === null) return rendered;
+  const origin: CodeSnapshotOrigin = {
+    ...snapshotContext,
+    codeBlockStartOffset,
+    language,
+  };
+  return (
+    <CodeSnapshotBlockProvider origin={origin}>
+      <CodeSnapshotDropZone>
+        <div ref={wrapperRef}>{rendered}</div>
+      </CodeSnapshotDropZone>
+    </CodeSnapshotBlockProvider>
+  );
 }
 
 export const MessageResponse = memo(
-  ({ className, components, controls, markFileLinks = false, ...props }: MessageResponseProps) => {
+  ({
+    className,
+    components,
+    controls,
+    markFileLinks = false,
+    codeSnapshotContext = null,
+    children,
+    BlockComponent = DefaultStreamdownBlock,
+    parseMarkdownIntoBlocksFn = parseMarkdownIntoBlocks,
+    ...props
+  }: MessageResponseProps) => {
     const messageComponents = useMemo(
       () => ({ ...components, pre: ChatCodeBlockPre }),
       [components],
     );
 
     const messageControls = useMemo(() => getChatCodeControls(controls), [controls]);
+    const blockStartOffsets = useMemo(
+      () =>
+        codeSnapshotContext && typeof children === "string"
+          ? getMarkdownBlockStartOffsets(children, parseMarkdownIntoBlocksFn)
+          : [],
+      [children, codeSnapshotContext, parseMarkdownIntoBlocksFn],
+    );
+    const blockRenderContext = useMemo<CodeSnapshotBlockRenderContextValue>(
+      () => ({ blockComponent: BlockComponent, blockStartOffsets }),
+      [BlockComponent, blockStartOffsets],
+    );
 
     return (
-      <Streamdown
-        // wrap-anywhere is inherited, giving every prose descendant (including inline code) a break opportunity.
-        className={cn(
-          "size-full wrap-anywhere [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-          className,
-        )}
-        plugins={STREAMDOWN_PLUGINS}
-        // Let links open on a plain click (and cmd/ctrl-click in a new tab)
-        // instead of Streamdown's default "Open external link?" modal.
-        linkSafety={CHAT_LINK_SAFETY}
-        {...props}
-        components={messageComponents}
-        controls={messageControls}
-        // Block remote image fetches that can exfiltrate data through URLs.
-        rehypePlugins={
-          markFileLinks ? FILE_LINK_STREAMDOWN_REHYPE_PLUGINS : SECURE_STREAMDOWN_REHYPE_PLUGINS
-        }
-      />
+      <CodeSnapshotRenderContext.Provider value={codeSnapshotContext}>
+        <CodeSnapshotBlockRenderContext.Provider value={blockRenderContext}>
+          <Streamdown
+            // wrap-anywhere is inherited, giving every prose descendant (including inline code) a break opportunity.
+            className={cn(
+              "size-full wrap-anywhere [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+              className,
+            )}
+            plugins={STREAMDOWN_PLUGINS}
+            // Let links open on a plain click (and cmd/ctrl-click in a new tab)
+            // instead of Streamdown's default "Open external link?" modal.
+            linkSafety={CHAT_LINK_SAFETY}
+            {...props}
+            BlockComponent={CodeSnapshotStreamdownBlock}
+            components={messageComponents}
+            controls={messageControls}
+            // Block remote image fetches that can exfiltrate data through URLs.
+            rehypePlugins={
+              markFileLinks ? FILE_LINK_STREAMDOWN_REHYPE_PLUGINS : SECURE_STREAMDOWN_REHYPE_PLUGINS
+            }
+          >
+            {children}
+          </Streamdown>
+        </CodeSnapshotBlockRenderContext.Provider>
+      </CodeSnapshotRenderContext.Provider>
     );
   },
 );

@@ -84,7 +84,12 @@ import {
 } from "@/hooks/useSessionLiveness";
 import { useResizableInlinePanel } from "@/hooks/useResizableInlinePanel";
 import { useResizableSidebar } from "@/hooks/useResizableSidebar";
+import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
+import { isMobileWebDevice } from "@/lib/mobileDevice";
 import { ChatHeader } from "./ChatHeader";
+import { InterviewSessionDrawer } from "./InterviewSessionDrawer";
+import { InterviewAttentionNotice } from "@/components/InterviewAttentionNotice";
+import { InterviewHelpEffect } from "@/components/InterviewHelpEffect";
 import { ExecutionLogsPanel } from "./ExecutionLogsPanel";
 import { FileViewer } from "./FileViewer";
 import { FileViewerContext } from "./FileViewerContext";
@@ -254,7 +259,9 @@ export function AppShell() {
           setSidebarOpen(phase === "open");
           return;
         }
-        if (!isMobileViewport()) return;
+        const wideInterviewShell =
+          isIOSShell() && useChatStore.getState().uiSettings.interview_mode === true;
+        if (!isMobileViewport() && !wideInterviewShell) return;
         setSidebarDragProgress(progress);
       }),
     [],
@@ -344,6 +351,13 @@ export function AppShell() {
   // the runner is auto-creating the terminal. Surfaced via
   // TerminalFirstContext below.
   const terminalPending = useChatStore((s) => s.terminalPending);
+  const interviewMode = useChatStore((s) => s.uiSettings.interview_mode === true);
+  const isMobileNarrow = useIsMobileViewport();
+  const isNativeMobileShell = isIOSShell() || isAndroidShell();
+  const isMobileBrowser = isMobileWebDevice();
+  const mobileInterviewMode = Boolean(
+    conversationId && interviewMode && (isMobileNarrow || isNativeMobileShell || isMobileBrowser),
+  );
   // Read the conversation's terminals here too so the FAB's dropdown
   // can show/hide its "Terminals" entry and route a click to the first
   // terminal. The hook is react-query-backed and dedup'd with the rail.
@@ -1582,8 +1596,22 @@ export function AppShell() {
     }),
     [canClone],
   );
+  useEffect(() => {
+    if (!mobileInterviewMode) return;
+    setSidebarOpen(false);
+    setSidebarPeek(false);
+    setPanelInitialKey(null);
+    setExecutionLogsKey(null);
+    setFilesPanelOpen(false);
+    setSubagentsPanelOpen(false);
+    setShellsPanelOpen(false);
+    setSelectedFilePath(null);
+    setAgentInfoOpen(false);
+  }, [mobileInterviewMode, setPanelInitialKey]);
+
   const workspacePanelVisible = Boolean(
     conversationId &&
+    !mobileInterviewMode &&
     hasRailContent &&
     rightPanelOpen &&
     (terminalFirst || !panelOpen) &&
@@ -1665,20 +1693,31 @@ export function AppShell() {
           header — which is taller and also anchored at top-0 — so a centered
           "<thread> — <host>" label here collided with the header's action
           cluster on a narrow window. The strip stays pure drag surface. */}
-            <Sidebar
-              open={sidebarOpen}
-              onOpen={() => {
-                setSidebarOpen(true);
-                setSidebarPeek(false);
-              }}
-              peek={sidebarPeek}
-              dragProgress={sidebarDragProgress}
-              onClose={() => {
-                setSidebarOpen(false);
-                setSidebarPeek(false);
-              }}
-              onOpenSearch={() => setCommandPaletteOpen(true)}
-            />
+            {mobileInterviewMode ? (
+              <InterviewSessionDrawer
+                open={sidebarOpen}
+                dragProgress={sidebarDragProgress}
+                onClose={() => {
+                  setSidebarOpen(false);
+                  setSidebarPeek(false);
+                }}
+              />
+            ) : (
+              <Sidebar
+                open={sidebarOpen}
+                onOpen={() => {
+                  setSidebarOpen(true);
+                  setSidebarPeek(false);
+                }}
+                peek={sidebarPeek}
+                dragProgress={sidebarDragProgress}
+                onClose={() => {
+                  setSidebarOpen(false);
+                  setSidebarPeek(false);
+                }}
+                onOpenSearch={() => setCommandPaletteOpen(true)}
+              />
+            )}
 
             {/* Content region (everything right of the sidebar): a relative
           flex row holding the chat+workspace group and the push panels
@@ -1770,6 +1809,7 @@ export function AppShell() {
                     onOpenSubagents: openSubagentsPanel,
                     onOpenMainExecutionLog: openMainExecutionLog,
                   }}
+                  mobileInterviewMode={mobileInterviewMode}
                 />
                 <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
                   <Outlet />
@@ -1779,15 +1819,19 @@ export function AppShell() {
               push panel is open (the panel itself becomes the focus). Only
               rendered in debug mode so the column doesn't occupy space in
               normal use. */}
-                {conversationId && debugMode && !panelOpen && !executionLogsOpen && (
-                  <div className="hidden md:flex md:flex-col md:w-56 md:shrink-0 md:border-l md:border-border md:overflow-y-auto md:px-2 md:pb-2 md:pt-12 md:gap-2">
-                    <SessionRail
-                      conversationId={conversationId}
-                      onExpandExecutionLogs={openExecutionLogsPanel}
-                      suppressed={false}
-                    />
-                  </div>
-                )}
+                {conversationId &&
+                  !mobileInterviewMode &&
+                  debugMode &&
+                  !panelOpen &&
+                  !executionLogsOpen && (
+                    <div className="hidden md:flex md:flex-col md:w-56 md:shrink-0 md:border-l md:border-border md:overflow-y-auto md:px-2 md:pb-2 md:pt-12 md:gap-2">
+                      <SessionRail
+                        conversationId={conversationId}
+                        onExpandExecutionLogs={openExecutionLogsPanel}
+                        suppressed={false}
+                      />
+                    </div>
+                  )}
 
                 {/* Right workspace card — gated on conversationId (panels have
               no workspace to read without a session), default-open,
@@ -1841,7 +1885,7 @@ export function AppShell() {
               {/* Push panels — flex siblings to main, animate width. Only one is open at a time.
           Terminal-first sessions render the terminal inline inside main
           (via MainTerminalView in ChatPage) and never mount the drawer. */}
-              {conversationId && !terminalFirst && (
+              {conversationId && !mobileInterviewMode && !terminalFirst && (
                 <TerminalsPanel
                   open={panelOpen}
                   conversationId={conversationId}
@@ -1855,7 +1899,7 @@ export function AppShell() {
                   onClose={() => setPanelInitialKey(null)}
                 />
               )}
-              {conversationId && (
+              {conversationId && !mobileInterviewMode && (
                 <ExecutionLogsPanel
                   open={executionLogsOpen}
                   conversationId={conversationId}
@@ -1863,7 +1907,7 @@ export function AppShell() {
                   onClose={() => setExecutionLogsKey(null)}
                 />
               )}
-              {conversationId && showFilesPanel && (
+              {conversationId && !mobileInterviewMode && showFilesPanel && (
                 <FilesPanelDrawer
                   open={filesPanelOpen}
                   onClose={() => setFilesPanelOpen(false)}
@@ -1879,7 +1923,7 @@ export function AppShell() {
           desktop push panel of their own. `MobilePanelDrawer` is `md:hidden`,
           so these never collide with the desktop rail; they're opened from
           the session-menu FAB above. */}
-              {conversationId && rootSessionId && (
+              {conversationId && !mobileInterviewMode && rootSessionId && (
                 <MobilePanelDrawer
                   open={subagentsPanelOpen}
                   title="Agents"
@@ -1889,7 +1933,7 @@ export function AppShell() {
                   <SubagentsPanel conversationId={conversationId} rootSessionId={rootSessionId} />
                 </MobilePanelDrawer>
               )}
-              {conversationId && (
+              {conversationId && !mobileInterviewMode && (
                 <MobilePanelDrawer
                   open={shellsPanelOpen}
                   title="Shells"
@@ -1906,7 +1950,7 @@ export function AppShell() {
                 </MobilePanelDrawer>
               )}
               {/* Mobile-only push panel — on desktop the viewer lives inside the inline aside. */}
-              {conversationId && selectedFilePath !== null && (
+              {conversationId && !mobileInterviewMode && selectedFilePath !== null && (
                 <div className="md:hidden">
                   <FileViewer
                     open
@@ -1948,6 +1992,8 @@ export function AppShell() {
               }}
             />
           )}
+          <InterviewAttentionNotice conversationId={conversationId} showAttention={interviewMode} />
+          <InterviewHelpEffect />
           <CloseShellDialog
             open={terminalPendingClose !== null}
             shellLabel={(() => {

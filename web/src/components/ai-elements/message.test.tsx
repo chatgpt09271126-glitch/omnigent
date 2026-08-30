@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Message, MessageAction, MessageActions, MessageContent, MessageResponse } from "./message";
 
@@ -59,6 +60,18 @@ describe("MessageAction", () => {
       "text-muted-foreground",
       "hover:text-foreground",
     );
+  });
+
+  it("forwards its button ref for popover and tooltip triggers", () => {
+    const ref = createRef<HTMLButtonElement>();
+
+    render(
+      <MessageAction ref={ref} label="Signals">
+        <svg aria-hidden />
+      </MessageAction>,
+    );
+
+    expect(ref.current).toBe(screen.getByRole("button", { name: "Signals" }));
   });
 });
 

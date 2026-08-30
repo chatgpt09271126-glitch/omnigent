@@ -64,6 +64,13 @@ COMMENT_STATUS: dict[str, int] = {
     "addressed": 2,
 }
 
+CODE_SNAPSHOT_CAPTURE_TYPE: dict[str, int] = {
+    "region_capture": 1,
+    "mobile_quick_capture": 2,
+    "uploaded_image": 3,
+    "clipboard_image": 4,
+}
+
 # Last relay-observed turn status persisted on the conversation's metadata
 # row (``omnigent_conversation_metadata.live_status``) so any server replica
 # can serve the sidebar's activity state, not just the pod holding the
@@ -238,6 +245,24 @@ def encode_comment_status(name: str) -> int:
 def decode_comment_status(code: int) -> str:
     """Decode a ``comments.status`` int code to its name."""
     return _decode(COMMENT_STATUS, code, field="comments.status")
+
+
+def encode_code_snapshot_capture_type(name: str) -> int:
+    """Encode a ``code_snapshots.capture_type`` name to its int code."""
+    return _encode(
+        CODE_SNAPSHOT_CAPTURE_TYPE,
+        name,
+        field="code_snapshots.capture_type",
+    )
+
+
+def decode_code_snapshot_capture_type(code: int) -> str:
+    """Decode a ``code_snapshots.capture_type`` int code to its name."""
+    return _decode(
+        CODE_SNAPSHOT_CAPTURE_TYPE,
+        code,
+        field="code_snapshots.capture_type",
+    )
 
 
 def encode_session_live_status(name: str) -> int:

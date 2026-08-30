@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/host", () => ({
@@ -6,6 +6,7 @@ vi.mock("@/lib/host", () => ({
 }));
 
 import { CodeFocusViewer } from "./CodeFocusViewer";
+import { emitResponseSignalArrival, emitResponseSignalNavigation } from "@/lib/responseSignals";
 
 afterEach(() => {
   cleanup();
@@ -40,10 +41,10 @@ describe("CodeFocusViewer", () => {
 
     const dialog = screen.getByRole("dialog", { name: "Code focus mode" });
     expect(dialog).toHaveClass("code-focus-viewer", "fixed", "inset-0");
-    expect(screen.getByRole("button", { name: "Disable word wrap" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    const wrap = screen.getByRole("button", { name: "Disable word wrap" });
+    expect(wrap).toHaveAttribute("aria-pressed", "true");
+    expect(wrap).toHaveAttribute("data-state", "on");
+    expect(wrap).toHaveClass("bg-foreground/10", "text-foreground");
     expect(screen.getByRole("button", { name: "Zoom out" })).toBeEnabled();
     expect(screen.getByLabelText("Code zoom 100%")).toHaveTextContent("100%");
     expect(screen.getByRole("button", { name: "Zoom in" })).toBeEnabled();
@@ -210,9 +211,41 @@ describe("CodeFocusViewer", () => {
       "aria-pressed",
       "false",
     );
+    expect(screen.getByRole("button", { name: "Enable word wrap" })).toHaveAttribute(
+      "data-state",
+      "off",
+    );
+    expect(screen.getByRole("button", { name: "Enable word wrap" })).toHaveClass(
+      "opacity-50",
+      "text-muted-foreground",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Enable word wrap" }));
+    expect(screen.getByRole("button", { name: "Disable word wrap" })).toHaveClass(
+      "bg-foreground/10",
+      "text-foreground",
+    );
 
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("stays open on Attention arrival and closes only after explicit navigation", () => {
+    renderViewer();
+    fireEvent.click(screen.getByRole("button", { name: "Open code focus mode" }));
+    const attention = {
+      conversationId: "conv_a",
+      responseId: "resp_a",
+      signalType: "attention" as const,
+      active: true,
+      source: "remote" as const,
+    };
+
+    act(() => emitResponseSignalArrival(attention));
+    expect(screen.getByRole("dialog", { name: "Code focus mode" })).toBeInTheDocument();
+
+    act(() => emitResponseSignalNavigation(attention));
+    expect(screen.queryByRole("dialog", { name: "Code focus mode" })).toBeNull();
   });
 });

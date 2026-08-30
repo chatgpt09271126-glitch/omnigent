@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bubble } from "@/lib/renderItems";
+import { emitResponseSignalArrival } from "@/lib/responseSignals";
 import { FileViewerContext } from "@/shell/FileViewerContext";
 import { useChatStore } from "@/store/chatStore";
 import { BubbleView } from "./ChatPage";
@@ -11,10 +12,22 @@ import { BubbleView } from "./ChatPage";
 // markdown syntax would render literally and these assertions would fail.
 
 const realFlagResponse = useChatStore.getState().flagResponse;
+const realSignalResponse = useChatStore.getState().signalResponse;
+const realRequestResponseHelp = useChatStore.getState().requestResponseHelp;
+const realRequestResponseScreenshot = useChatStore.getState().requestResponseScreenshot;
 
 afterEach(() => {
   cleanup();
-  useChatStore.setState({ flaggedResponses: {}, flagResponse: realFlagResponse });
+  vi.useRealTimers();
+  useChatStore.setState({
+    conversationId: null,
+    flaggedResponses: {},
+    responseSignals: {},
+    flagResponse: realFlagResponse,
+    signalResponse: realSignalResponse,
+    requestResponseHelp: realRequestResponseHelp,
+    requestResponseScreenshot: realRequestResponseScreenshot,
+  });
 });
 
 const FILE_VIEWER_NOOP = {
@@ -48,10 +61,14 @@ function assistantBubble(
   };
 }
 
-function renderBubble(bubble: Bubble, canFlagResponses = false) {
+function renderBubble(bubble: Bubble, canFlagResponses = false, interviewMode = false) {
   return render(
     <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
-      <BubbleView bubble={bubble} canFlagResponses={canFlagResponses} />
+      <BubbleView
+        bubble={bubble}
+        canFlagResponses={canFlagResponses}
+        interviewMode={interviewMode}
+      />
     </FileViewerContext.Provider>,
   );
 }
@@ -223,6 +240,141 @@ describe("AssistantBubble response flagging", () => {
     fireEvent.click(screen.getByTestId("flag-response"));
 
     expect(flagResponse).toHaveBeenCalledWith("codex_turn_123", true);
+  });
+});
+
+describe("AssistantBubble Interview response signals", () => {
+  it("renders one compact launcher instead of five permanent controls", () => {
+    renderBubble(assistantBubble("streaming"), true, true);
+
+    expect(screen.getByTestId("response-signal-launcher")).toBeInTheDocument();
+    expect(screen.queryByTestId("signal-good")).toBeNull();
+    expect(screen.queryByTestId("flag-response")).toBeNull();
+  });
+
+  it("opens the signal menu and sends the selected response-specific signal", async () => {
+    const signalResponse = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ signalResponse });
+    renderBubble(assistantBubble("streaming"), true, true);
+
+    fireEvent.click(screen.getByTestId("response-signal-launcher"));
+    fireEvent.click(await screen.findByTestId("signal-more_detail"));
+
+    expect(signalResponse).toHaveBeenCalledWith("codex_turn_123", "more_detail", true);
+  });
+
+  it("makes active choices visually explicit and sends a transient Help request", async () => {
+    const requestResponseHelp = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({
+      requestResponseHelp,
+      responseSignals: {
+        codex_turn_123: {
+          attention: {
+            signalType: "attention",
+            signaledBy: "mobile@example.com",
+            signaledAt: 10,
+          },
+        },
+      },
+    });
+    renderBubble(assistantBubble("completed"), true, true);
+
+    fireEvent.click(screen.getByTestId("response-signal-launcher"));
+    const attention = await screen.findByTestId("signal-attention");
+    expect(attention).toHaveAttribute("aria-pressed", "true");
+    expect(attention).toHaveClass("border-foreground/50");
+    fireEvent.click(screen.getByTestId("signal-help"));
+
+    expect(requestResponseHelp).toHaveBeenCalledWith("codex_turn_123");
+    expect(screen.queryByTestId("response-signal-menu")).toBeNull();
+  });
+
+  it("sends a transient screenshot request without prompting the agent", async () => {
+    const requestResponseScreenshot = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ requestResponseScreenshot });
+    renderBubble(assistantBubble("completed"), true, true);
+
+    fireEvent.click(screen.getByTestId("response-signal-launcher"));
+    fireEvent.click(await screen.findByTestId("signal-screenshot"));
+
+    expect(requestResponseScreenshot).toHaveBeenCalledWith("codex_turn_123");
+    expect(screen.queryByTestId("response-signal-menu")).toBeNull();
+  });
+
+  it("shows non-color markers and a concise detail request chip", () => {
+    useChatStore.setState({
+      responseSignals: {
+        codex_turn_123: {
+          good: { signalType: "good", signaledBy: "mobile@example.com", signaledAt: 10 },
+          attention: {
+            signalType: "attention",
+            signaledBy: "mobile@example.com",
+            signaledAt: 11,
+          },
+          shorter: { signalType: "shorter", signaledBy: "mobile@example.com", signaledAt: 12 },
+        },
+      },
+    });
+    renderBubble(assistantBubble("completed"), false, true);
+
+    expect(screen.getByTestId("message-bubble")).toHaveAttribute("data-good", "true");
+    expect(screen.getByTestId("message-bubble")).toHaveAttribute("data-attention", "true");
+    expect(screen.getByTestId("response-signal-state")).toHaveTextContent("Good");
+    expect(screen.getByTestId("response-signal-state")).toHaveTextContent("Attention requested");
+    expect(
+      screen.getByTestId("response-signal-state").querySelector("[data-response-attention-target]"),
+    ).toHaveAttribute("data-response-attention-target", "codex_turn_123");
+    expect(screen.getByTestId("response-detail-request")).toHaveTextContent("Requested: Shorter");
+  });
+
+  it("applies a one-time arrival class only for a live signal event", () => {
+    useChatStore.setState({ conversationId: "conv_interview" });
+    renderBubble(assistantBubble("completed"), false, true);
+
+    act(() => {
+      emitResponseSignalArrival({
+        conversationId: "conv_other",
+        responseId: "codex_turn_123",
+        signalType: "good",
+        active: true,
+        source: "remote",
+      });
+    });
+    expect(screen.getByTestId("message-bubble")).not.toHaveClass("response-signal-arrival-good");
+
+    act(() => {
+      emitResponseSignalArrival({
+        conversationId: "conv_interview",
+        responseId: "codex_turn_123",
+        signalType: "good",
+        active: true,
+        source: "remote",
+      });
+    });
+    expect(screen.getByTestId("message-bubble")).toHaveClass("response-signal-arrival-good");
+  });
+
+  it("hydrates persistent state without replaying an arrival animation", () => {
+    renderBubble(assistantBubble("completed"), false, true);
+
+    act(() => {
+      useChatStore.setState({
+        responseSignals: {
+          codex_turn_123: {
+            attention: {
+              signalType: "attention",
+              signaledBy: "mobile@example.com",
+              signaledAt: 20,
+            },
+          },
+        },
+      });
+    });
+
+    expect(screen.getByTestId("message-bubble")).toHaveAttribute("data-attention", "true");
+    expect(screen.getByTestId("message-bubble")).not.toHaveClass(
+      "response-signal-arrival-attention",
+    );
   });
 });
 

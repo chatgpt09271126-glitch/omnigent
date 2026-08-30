@@ -315,6 +315,7 @@ from omnigent.server.schemas import (
     ErrorDetail,
     FlaggedResponseInfo,
     NativeModelOption,
+    ResponseSignalInfo,
     SessionCreateMetadata,
     SessionCreateRequest,
     SessionEventInput,
@@ -341,6 +342,8 @@ from omnigent.stores.conversation_store import (
     ConversationNotFoundError,
     NameAlreadyExistsError,
     ResponseFlag,
+    ResponseSignal,
+    ResponseSignalType,
     pinned_label_key,
 )
 from omnigent.stores.file_store import FileStore
@@ -962,6 +965,7 @@ def _build_session_response(
     model_options: list[dict[str, Any]] | None = None,
     viewer_id: str | None = None,
     flagged_responses: dict[str, ResponseFlag] | None = None,
+    response_signals: dict[str, dict[ResponseSignalType, ResponseSignal]] | None = None,
     agent_store: AgentStore | None = None,
     agent_cache: AgentCache | None = None,
 ) -> SessionResponse:
@@ -1161,6 +1165,17 @@ def _build_session_response(
                 flagged_by=flag.flagged_by, flagged_at=flag.flagged_at
             )
             for response_id, flag in (flagged_responses or {}).items()
+        },
+        response_signals={
+            response_id: {
+                signal_type: ResponseSignalInfo(
+                    signal_type=signal.signal_type,
+                    signaled_by=signal.signaled_by,
+                    signaled_at=signal.signaled_at,
+                )
+                for signal_type, signal in signals.items()
+            }
+            for response_id, signals in (response_signals or {}).items()
         },
     )
 
@@ -9434,6 +9449,7 @@ async def _get_session_snapshot(
         if host_for_resume is not None:
             host_resumable = host_resume_supported(host_for_resume, sandbox_config)
     flagged_responses = await asyncio.to_thread(conv_store.list_response_flags, conv.id)
+    response_signals = await asyncio.to_thread(conv_store.list_response_signals, conv.id)
     return _build_session_response(
         conv,
         items,
@@ -9459,6 +9475,7 @@ async def _get_session_snapshot(
         subtree_usage=subtree_usage,
         viewer_id=viewer_id,
         flagged_responses=flagged_responses,
+        response_signals=response_signals,
         agent_store=agent_store,
         agent_cache=agent_cache,
     )

@@ -9,6 +9,7 @@
 // Python class name lowercased (e.g. ResponseCreated → "response_created").
 
 import type { RoutingDecisionExtras } from "./routingDecision";
+import type { ResponseSignalState, ResponseSignalType } from "./responseSignals";
 import type {
   BackgroundTaskInfo,
   ErrorInfo,
@@ -601,6 +602,38 @@ export interface ResponseFlaggedEvent {
   flaggedAt: number;
 }
 
+/** `response.signal_changed` — complete settled state after one signal mutation. */
+export interface ResponseSignalChangedEvent {
+  type: "response_signal_changed";
+  conversationId: string;
+  responseId: string;
+  changedSignal: ResponseSignalType;
+  active: boolean;
+  signaledBy?: string | null;
+  signaledAt: number;
+  signals: ResponseSignalState;
+}
+
+/** `response.help_requested` — one transient human-to-human emergency effect. */
+export interface ResponseHelpRequestedEvent {
+  type: "response_help_requested";
+  conversationId: string;
+  responseId: string;
+  requestId: string;
+  requestedBy: string | null;
+  requestedAt: number;
+}
+
+/** `response.screenshot_requested` — one transient readability request effect. */
+export interface ResponseScreenshotRequestedEvent {
+  type: "response_screenshot_requested";
+  conversationId: string;
+  responseId: string;
+  requestId: string;
+  requestedBy: string | null;
+  requestedAt: number;
+}
+
 /**
  * `session.permission_mode` — active claude-native permission-mode switch.
  *
@@ -976,6 +1009,9 @@ export type StreamEvent =
   | SessionCollaborationModeEvent
   | SessionUiSettingsEvent
   | ResponseFlaggedEvent
+  | ResponseSignalChangedEvent
+  | ResponseHelpRequestedEvent
+  | ResponseScreenshotRequestedEvent
   | SessionPermissionModeEvent
   | SessionAgentChangedEvent
   | SessionTodosEvent

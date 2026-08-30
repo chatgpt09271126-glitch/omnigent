@@ -15,6 +15,7 @@ import {
 import {
   ArrowUpIcon,
   BotIcon,
+  CameraIcon,
   CheckIcon,
   AlertTriangleIcon,
   CornerUpLeftIcon,
@@ -28,6 +29,7 @@ import {
   Loader2Icon,
   PaperclipIcon,
   SettingsIcon,
+  SmilePlusIcon,
   SquareIcon,
   SquareTerminalIcon,
   WifiOffIcon,
@@ -66,6 +68,7 @@ import {
 import { SystemMessageView } from "@/components/blocks/SystemMessage";
 import { isSystemUserContent, parseSystemMessage } from "@/lib/systemMessage";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useAppName } from "@/lib/branding";
 import { StreamBudgetBanner } from "@/components/StreamBudgetBanner";
@@ -76,6 +79,7 @@ import { TurnRail, type Turn } from "@/pages/TurnRail";
 import { attachmentKey, validateAttachments } from "@/lib/attachments";
 import { useSurfaceFrontmost } from "@/hooks/useNativeServerSwitcher";
 import {
+  isAndroidShell,
   isIOSShell,
   onNativeSidebarDrag,
   onNativeViewModeChanged,
@@ -115,6 +119,7 @@ import {
 } from "@/lib/renderItems";
 import { getCurrentAuthorId } from "@/lib/identity";
 import { retrySession } from "@/lib/sessionsApi";
+import { onResponseSignalArrival, type ResponseSignalType } from "@/lib/responseSignals";
 import { codexEffortLevelsForModel, findNativeModelOption } from "@/lib/codexNativeModels";
 import {
   composerAttachmentKey,
@@ -230,6 +235,7 @@ import { GoalControl, GoalStatusPill, useGoalState, type Goal } from "@/componen
 import { copyText } from "@/lib/clipboard";
 import { showToast } from "@/components/ui/toast";
 import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
+import { isMobileWebDevice } from "@/lib/mobileDevice";
 
 // Matches both wordings the native executors emit: "[Attached: <path>]"
 // (claude/pi/cursor) and "[Attached file: <path>]" (codex). Capturing group
@@ -1343,10 +1349,11 @@ export function ChatPage() {
   // Operator-only affordance: flagging a response requires both write access
   // to the thread and the per-thread "Flag responses" toggle to be on (see
   // ChatHeader's thread-settings popover, which sets `uiSettings.response_flagging`).
+  const interviewMode = uiSettings.interview_mode === true;
   const canFlagResponses =
     isEditorLevel(permissionLevel) &&
     readOnlyReason === null &&
-    uiSettings.response_flagging === true;
+    (uiSettings.response_flagging === true || interviewMode);
   // Once present, the live session snapshot is authoritative.
   const capabilitySource = {
     labels: activeSession ? (activeSession.labels ?? {}) : (activeConv?.labels ?? {}),
@@ -1405,6 +1412,7 @@ export function ChatPage() {
       loadingMoreHistory={loadingMoreHistory}
       permissionLevel={permissionLevel}
       canFlagResponses={canFlagResponses}
+      interviewMode={interviewMode}
       readOnlyReason={readOnlyReason}
       effortLevels={effortLevels}
       showEffort={showEffort}
@@ -1646,6 +1654,8 @@ interface MainAgentSurfaceProps {
   permissionLevel: number | null;
   /** Whether this viewer may flag assistant responses (write access + thread setting on). */
   canFlagResponses: boolean;
+  /** Whether the thread exposes the full Interview signal vocabulary. */
+  interviewMode: boolean;
   /** Forces composer read-only with the given placeholder when non-null. See ``ComposerProps.readOnlyReason``. */
   readOnlyReason: string | null;
   effortLevels: readonly string[];
@@ -1798,6 +1808,7 @@ function MainAgentSurface({
   loadingMoreHistory,
   permissionLevel,
   canFlagResponses,
+  interviewMode,
   readOnlyReason,
   effortLevels,
   showEffort,
@@ -1819,6 +1830,8 @@ function MainAgentSurface({
   // under `md`). Gate its MOUNT — not just its visibility — on the viewport so
   // mobile never mounts observers and history listeners for a rail it can't see.
   const isMobileViewport = useIsMobileViewport();
+  const mobileInterviewSurface =
+    interviewMode && (isMobileViewport || isIOSShell() || isAndroidShell() || isMobileWebDevice());
   // Mirrors ChatPage's `sandboxLaunching`: while the managed-sandbox
   // launch runs, the composer must stay sendable — the server parks
   // the message on the launch rendezvous — even though liveness reads
@@ -2157,7 +2170,7 @@ function MainAgentSurface({
                   // With the Plan accordion pinned above, the header is already
                   // cleared, so only a small gap below the accordion is needed.
                   hasTasks ? "pt-4" : "pt-20",
-                  "md:pl-[clamp(1rem,(54rem-100cqi)*0.5+1rem,1.5rem)]",
+                  !mobileInterviewSurface && "md:pl-[clamp(1rem,(54rem-100cqi)*0.5+1rem,1.5rem)]",
                   CHAT_COLUMN_WIDTH,
                 )}
               >
@@ -2200,6 +2213,8 @@ function MainAgentSurface({
                         key={bubbleKey(bubble)}
                         bubble={bubble}
                         canFlagResponses={canFlagResponses}
+                        interviewMode={interviewMode}
+                        canEditSnapshots={isEditorLevel(permissionLevel) && readOnlyReason === null}
                         isLastAssistant={bubbleIndex === lastAssistantIndex}
                         showsWorking={showsWorking && bubbleIndex === lastAssistantIndex}
                       />
@@ -2292,7 +2307,7 @@ function MainAgentSurface({
             in older history on scroll-up. Sibling of Conversation for the same
             reason as JumpToTopButton — it escapes the chat-scroll-fade mask.
             Desktop-only: not mounted on mobile where the rail is hidden. */}
-            {!isMobileViewport && (
+            {!isMobileViewport && !mobileInterviewSurface && (
               <TurnRail
                 turns={turns}
                 scroller={scroller}
@@ -2312,44 +2327,53 @@ function MainAgentSurface({
             }
           />
 
-          <Composer
-            disabled={disabled}
-            status={status}
-            isWorking={isWorking}
-            onSend={handleSend}
-            onSendSlashCommand={handleSendSlashCommand}
-            onStop={onStop}
-            agents={agents}
-            selectedAgentId={selectedAgentId}
-            permissionLevel={permissionLevel}
-            readOnlyReason={readOnlyReason}
-            replyQuotes={replyQuotes}
-            onRemoveQuote={(i) => setReplyQuotes((prev) => prev.filter((_, idx) => idx !== i))}
-            onClearAllQuotes={() => setReplyQuotes([])}
-            effortLevels={effortLevels}
-            showEffort={showEffort}
-            showModels={showModels}
-            modelPickerKind={modelPickerKind}
-            codexModelOptions={codexModelOptions}
-            showCodexPlanMode={showCodexPlanMode}
-            showClaudePermissionMode={showClaudePermissionMode}
-            showGoalControl={showGoalControl}
-            showClaudeGoalControl={showClaudeGoalControl}
-            showPollyCodexGoalControl={showPollyCodexGoalControl}
-            isTerminalFirst={isTerminalFirst}
-            isNativeWrapper={isNativeWrapper}
-            reconnectHint={liveness.kind === "runner_asleep" || liveness.kind === "host_asleep"}
-            sandboxAsleepHint={liveness.kind === "host_asleep"}
-            unreachable={
-              !sandboxLaunching &&
-              (liveness.kind === "host_offline" || liveness.kind === "local_stranded")
-            }
-            onShowReconnectHelp={onShowReconnectHelp}
-            costRoutingEligible={costRoutingEligible}
-            subagentRoutingEligible={subagentRoutingEligible}
-            subAgentLabel={subAgentLabel}
-            wrapperLabel={wrapperLabel}
-          />
+          {mobileInterviewSurface ? (
+            <InterviewAskAgent
+              disabled={disabled}
+              permissionLevel={permissionLevel}
+              readOnlyReason={readOnlyReason}
+              onSend={handleSend}
+            />
+          ) : (
+            <Composer
+              disabled={disabled}
+              status={status}
+              isWorking={isWorking}
+              onSend={handleSend}
+              onSendSlashCommand={handleSendSlashCommand}
+              onStop={onStop}
+              agents={agents}
+              selectedAgentId={selectedAgentId}
+              permissionLevel={permissionLevel}
+              readOnlyReason={readOnlyReason}
+              replyQuotes={replyQuotes}
+              onRemoveQuote={(i) => setReplyQuotes((prev) => prev.filter((_, idx) => idx !== i))}
+              onClearAllQuotes={() => setReplyQuotes([])}
+              effortLevels={effortLevels}
+              showEffort={showEffort}
+              showModels={showModels}
+              modelPickerKind={modelPickerKind}
+              codexModelOptions={codexModelOptions}
+              showCodexPlanMode={showCodexPlanMode}
+              showClaudePermissionMode={showClaudePermissionMode}
+              showGoalControl={showGoalControl}
+              showClaudeGoalControl={showClaudeGoalControl}
+              showPollyCodexGoalControl={showPollyCodexGoalControl}
+              isTerminalFirst={isTerminalFirst}
+              isNativeWrapper={isNativeWrapper}
+              reconnectHint={liveness.kind === "runner_asleep" || liveness.kind === "host_asleep"}
+              sandboxAsleepHint={liveness.kind === "host_asleep"}
+              unreachable={
+                !sandboxLaunching &&
+                (liveness.kind === "host_offline" || liveness.kind === "local_stranded")
+              }
+              onShowReconnectHelp={onShowReconnectHelp}
+              costRoutingEligible={costRoutingEligible}
+              subagentRoutingEligible={subagentRoutingEligible}
+              subAgentLabel={subAgentLabel}
+              wrapperLabel={wrapperLabel}
+            />
+          )}
 
           {/* Chat/Terminal toggle for terminal-first sessions, reconnect-or-
           fork banner when unreachable, nothing otherwise. Sits below the
@@ -3619,11 +3643,15 @@ export const BubbleView = memo(
   function BubbleView({
     bubble,
     canFlagResponses = false,
+    interviewMode = false,
+    canEditSnapshots = false,
     isLastAssistant = false,
     showsWorking = false,
   }: {
     bubble: Bubble;
     canFlagResponses?: boolean;
+    interviewMode?: boolean;
+    canEditSnapshots?: boolean;
     isLastAssistant?: boolean;
     showsWorking?: boolean;
   }) {
@@ -3647,6 +3675,8 @@ export const BubbleView = memo(
       <AssistantBubble
         bubble={bubble}
         canFlagResponses={canFlagResponses}
+        interviewMode={interviewMode}
+        canEditSnapshots={canEditSnapshots}
         isLastAssistant={isLastAssistant}
         showsWorking={showsWorking}
       />
@@ -3654,6 +3684,8 @@ export const BubbleView = memo(
   },
   (prev, next) =>
     prev.canFlagResponses === next.canFlagResponses &&
+    (prev.interviewMode ?? false) === (next.interviewMode ?? false) &&
+    (prev.canEditSnapshots ?? false) === (next.canEditSnapshots ?? false) &&
     (prev.isLastAssistant ?? false) === (next.isLastAssistant ?? false) &&
     (prev.showsWorking ?? false) === (next.showsWorking ?? false) &&
     bubblesEqual(prev.bubble, next.bubble),
@@ -3906,11 +3938,15 @@ function UserBubble({ bubble }: { bubble: Extract<Bubble, { kind: "user" }> }) {
 function AssistantBubble({
   bubble,
   canFlagResponses = false,
+  interviewMode = false,
+  canEditSnapshots = false,
   isLastAssistant = false,
   showsWorking = false,
 }: {
   bubble: Extract<Bubble, { kind: "assistant" }>;
   canFlagResponses?: boolean;
+  interviewMode?: boolean;
+  canEditSnapshots?: boolean;
   isLastAssistant?: boolean;
   showsWorking?: boolean;
 }) {
@@ -3936,7 +3972,51 @@ function AssistantBubble({
   // `response.flagged` SSE event re-renders this bubble's highlight
   // immediately — including mid-stream, before the parent's memo comparator
   // would otherwise see a prop change.
-  const isFlagged = useChatStore((s) => s.flaggedResponses[bubble.responseId] != null);
+  const signals = useChatStore((s) => s.responseSignals[bubble.responseId]);
+  const legacyFlag = useChatStore((s) => s.flaggedResponses[bubble.responseId]);
+  const isFlagged = signals?.bad != null || legacyFlag != null;
+  const isGood = signals?.good != null;
+  const hasAttention = signals?.attention != null;
+  const detailRequest = signals?.shorter ? "shorter" : signals?.more_detail ? "more_detail" : null;
+  const [signalMenuOpen, setSignalMenuOpen] = useState(false);
+  const [arrivalSignal, setArrivalSignal] = useState<ResponseSignalType | null>(null);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    return onResponseSignalArrival((arrival) => {
+      if (arrival.conversationId !== conversationId || arrival.responseId !== bubble.responseId) {
+        return;
+      }
+      if (!arrival.active) return;
+      setArrivalSignal(arrival.signalType);
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => setArrivalSignal(null), 1_200);
+    });
+  }, [bubble.responseId, conversationId]);
+  const toggleSignal = useCallback(
+    (signalType: ResponseSignalType) => {
+      const active = signals?.[signalType] == null;
+      setSignalMenuOpen(false);
+      void useChatStore
+        .getState()
+        .signalResponse(bubble.responseId, signalType, active)
+        .catch(() => {});
+    },
+    [bubble.responseId, signals],
+  );
+  const requestHelp = useCallback(() => {
+    setSignalMenuOpen(false);
+    void useChatStore
+      .getState()
+      .requestResponseHelp(bubble.responseId)
+      .catch(() => {});
+  }, [bubble.responseId]);
+  const requestScreenshot = useCallback(() => {
+    setSignalMenuOpen(false);
+    void useChatStore
+      .getState()
+      .requestResponseScreenshot(bubble.responseId)
+      .catch(() => {});
+  }, [bubble.responseId]);
   const handleRetryError = useCallback(async () => {
     if (!conversationId) throw new Error("Session is not available");
     const result = await retrySession(conversationId);
@@ -3982,13 +4062,22 @@ function AssistantBubble({
         from="assistant"
         data-testid="message-bubble"
         data-role="assistant"
+        data-response-id={bubble.responseId}
         data-flagged={isFlagged ? "true" : undefined}
+        data-good={isGood ? "true" : undefined}
+        data-attention={hasAttention ? "true" : undefined}
+        tabIndex={-1}
         className={cn(
           isWide ? "max-w-full" : "max-w-3xl",
           // Live, noticeable highlight for an operator-flagged response —
           // works identically mid-stream (see `isFlagged` above, subscribed
           // outside BubbleView's memo boundary) or once the turn settles.
           isFlagged && "rounded-lg ring-2 ring-amber-500/60 bg-amber-500/10 dark:bg-amber-400/10",
+          isGood && !isFlagged && "rounded-lg ring-1 ring-emerald-500/50 bg-emerald-500/8",
+          hasAttention && !isFlagged && !isGood && "rounded-lg ring-1 ring-foreground/20",
+          arrivalSignal === "bad" && "response-signal-arrival-bad",
+          arrivalSignal === "good" && "response-signal-arrival-good",
+          arrivalSignal === "attention" && "response-signal-arrival-attention",
         )}
       >
         {/* A fold-only bubble takes w-full at the ordinary max-w-3xl cap
@@ -4007,6 +4096,10 @@ function AssistantBubble({
             hasPendingElicitation={hasPendingElicitation}
             lastActivityAtS={bubble.lastActivityAtS}
             showsWorking={showsWorking}
+            snapshotConversationId={conversationId}
+            snapshotResponseId={bubble.responseId}
+            canEditSnapshots={canEditSnapshots}
+            snapshotsStable={bubble.lifecycle !== "streaming"}
             onRetryError={handleRetryError}
           />
         </MessageContent>
@@ -4019,6 +4112,44 @@ function AssistantBubble({
             <span>Interrupted</span>
           </p>
         )}
+        {(isFlagged || isGood || hasAttention || detailRequest) && (
+          <div
+            className="flex flex-wrap items-center gap-1.5 px-0.5 text-[11px] text-muted-foreground"
+            data-testid="response-signal-state"
+          >
+            {isFlagged && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/12 px-2 py-0.5 text-amber-800 dark:text-amber-200">
+                <FlagIcon className="size-3 fill-current" aria-hidden="true" /> Bad
+              </span>
+            )}
+            {isGood && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/12 px-2 py-0.5 text-emerald-800 dark:text-emerald-200">
+                <CheckIcon className="size-3" aria-hidden="true" /> Good
+              </span>
+            )}
+            {hasAttention && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-foreground/75"
+                data-response-attention-target={bubble.responseId}
+                tabIndex={-1}
+              >
+                <span aria-hidden="true">‼</span> Attention requested
+              </span>
+            )}
+            {detailRequest && (
+              <span
+                className={cn(
+                  "inline-flex items-center rounded-full border border-border/70 bg-background/80 px-2 py-0.5",
+                  (arrivalSignal === "shorter" || arrivalSignal === "more_detail") &&
+                    "response-signal-arrival-chip",
+                )}
+                data-testid="response-detail-request"
+              >
+                Requested: {detailRequest === "shorter" ? "Shorter" : "More detail"}
+              </span>
+            )}
+          </div>
+        )}
         {/* Skipped on a fold-only bubble: the actions belong to content
             the user can see, and hanging them off a collapsed row spaced
             consecutive rows unevenly depending on hidden narration. Also
@@ -4028,7 +4159,12 @@ function AssistantBubble({
             40%-visible on touch (no hover), hover/focus-reveal on desktop.
             Order matches the design target: actions, then timestamp. */}
         {!foldOnly && !errorOnly && (ts || markdownText || canFlagResponses) && (
-          <div className="flex items-center gap-3 py-1 opacity-40 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+          <div
+            className={cn(
+              "flex items-center gap-3 py-1 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100",
+              interviewMode ? "opacity-100" : "opacity-40",
+            )}
+          >
             {(markdownText || canFlagResponses) && (
               <MessageActions>
                 {markdownText && (
@@ -4056,8 +4192,8 @@ function AssistantBubble({
                     <GitForkIcon size={14} />
                   </MessageAction>
                 )}
-                {/* Operators can flag a response before its stream settles. */}
-                {canFlagResponses && (
+                {/* Preserve the legacy direct Flag control outside Interview Mode. */}
+                {canFlagResponses && !interviewMode && (
                   <MessageAction
                     tooltip={isFlagged ? "Unflag response" : "Flag response"}
                     size="icon-xxs"
@@ -4072,6 +4208,122 @@ function AssistantBubble({
                   >
                     <FlagIcon size={14} className={isFlagged ? "fill-current" : undefined} />
                   </MessageAction>
+                )}
+                {canFlagResponses && interviewMode && (
+                  <Popover open={signalMenuOpen} onOpenChange={setSignalMenuOpen}>
+                    <PopoverTrigger asChild>
+                      <MessageAction
+                        label="Signal response"
+                        size="icon-xxs"
+                        data-testid="response-signal-launcher"
+                        aria-haspopup="menu"
+                        aria-expanded={signalMenuOpen}
+                        componentId="chat.message.signal"
+                      >
+                        <SmilePlusIcon size={14} />
+                      </MessageAction>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      className="w-64 max-w-[calc(100vw-1rem)] gap-2 p-2"
+                      align="start"
+                      side="top"
+                      role="menu"
+                      aria-label="Response signals"
+                      data-testid="response-signal-menu"
+                    >
+                      <div className="grid grid-cols-3 gap-1">
+                        {(
+                          [
+                            ["bad", "Bad", <FlagIcon key="bad" className="size-4" />],
+                            ["good", "Good", <CheckIcon key="good" className="size-4" />],
+                            ["attention", "Attention", <span key="attention">‼</span>],
+                          ] as const
+                        ).map(([type, label, icon]) => (
+                          <Button
+                            key={type}
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className={cn(
+                              "h-9 gap-1 border border-transparent px-2",
+                              type === "bad" &&
+                                signals?.bad &&
+                                "border-amber-500/70 bg-amber-500/20 text-amber-900 ring-1 ring-amber-500/30 hover:bg-amber-500/25 dark:text-amber-100",
+                              type === "good" &&
+                                signals?.good &&
+                                "border-emerald-500/70 bg-emerald-500/20 text-emerald-900 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25 dark:text-emerald-100",
+                              type === "attention" &&
+                                signals?.attention &&
+                                "border-foreground/50 bg-foreground/15 text-foreground ring-1 ring-foreground/20 hover:bg-foreground/20",
+                            )}
+                            aria-label={`${signals?.[type] ? "Clear" : "Set"} ${label} signal`}
+                            aria-pressed={signals?.[type] != null}
+                            role="menuitemcheckbox"
+                            data-testid={`signal-${type}`}
+                            onClick={() => toggleSignal(type)}
+                          >
+                            {icon}
+                            <span className="sr-only">{label}</span>
+                          </Button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-2 gap-1 border-t border-border/70 pt-2">
+                        {(
+                          [
+                            ["shorter", "Shorter"],
+                            ["more_detail", "More detail"],
+                          ] as const
+                        ).map(([type, label]) => (
+                          <Button
+                            key={type}
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className={cn(
+                              "h-8 border border-transparent px-2 text-xs",
+                              signals?.[type] &&
+                                "border-primary/70 bg-primary/20 font-semibold text-primary ring-1 ring-primary/25 hover:bg-primary/25",
+                            )}
+                            aria-label={`${signals?.[type] ? "Clear" : "Request"} ${label}`}
+                            aria-pressed={signals?.[type] != null}
+                            role="menuitemcheckbox"
+                            data-testid={`signal-${type}`}
+                            onClick={() => toggleSignal(type)}
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-2 gap-1 border-t border-border/70 pt-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 border border-destructive/45 bg-destructive/10 px-2 text-xs font-semibold text-destructive hover:bg-destructive/20 hover:text-destructive"
+                          aria-label="Send Help effect to other viewers"
+                          role="menuitem"
+                          data-testid="signal-help"
+                          onClick={requestHelp}
+                        >
+                          <AlertTriangleIcon className="size-3.5" aria-hidden="true" />
+                          Help
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 border border-sky-500/45 bg-sky-500/10 px-2 text-xs font-semibold text-sky-600 hover:bg-sky-500/20 hover:text-sky-600 dark:text-sky-400 dark:hover:text-sky-400"
+                          aria-label="Request screenshot from other viewers"
+                          role="menuitem"
+                          data-testid="signal-screenshot"
+                          onClick={requestScreenshot}
+                        >
+                          <CameraIcon className="size-3.5" aria-hidden="true" />
+                          Screenshot pls
+                        </Button>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                 )}
               </MessageActions>
             )}
@@ -4101,6 +4353,98 @@ function AssistantBubble({
 interface ReplyQuote {
   id: string;
   text: string;
+}
+
+export function InterviewAskAgent({
+  disabled,
+  permissionLevel,
+  readOnlyReason,
+  onSend,
+}: {
+  disabled: boolean;
+  permissionLevel: number | null;
+  readOnlyReason: string | null;
+  onSend: (text: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const readOnly = !isEditorLevel(permissionLevel) || readOnlyReason !== null;
+
+  const submit = useCallback(() => {
+    const text = value.trim();
+    if (!text || disabled || readOnly) return;
+    onSend(text);
+    setValue("");
+    setOpen(false);
+  }, [disabled, onSend, readOnly, value]);
+
+  return (
+    <div
+      className="shrink-0 border-t border-border/60 bg-background/90 px-3 pt-2 backdrop-blur"
+      style={{ paddingBottom: "max(0.5rem, var(--omnigent-safe-bottom, 0px))" }}
+      data-testid="interview-ask-control"
+    >
+      <Button
+        type="button"
+        variant="outline"
+        className="h-9 w-full rounded-xl bg-background/80 text-muted-foreground"
+        disabled={disabled || readOnly}
+        aria-label="Ask agent"
+        onClick={() => setOpen(true)}
+      >
+        {readOnly ? readOnlyReason || "Read-only session" : "Ask agent…"}
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          showCloseButton
+          className="top-auto bottom-0 max-h-[min(70dvh,32rem)] max-w-none -translate-y-0 rounded-b-none rounded-t-3xl p-4 sm:max-w-none"
+          style={{
+            top: "auto",
+            bottom: 0,
+            maxHeight:
+              "calc(var(--omnigent-viewport-height, 100dvh) - var(--omnigent-safe-top, 0px) - 1rem)",
+            paddingBottom: "max(1rem, var(--omnigent-safe-bottom, 0px))",
+          }}
+          data-testid="interview-ask-sheet"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            textareaRef.current?.focus();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Ask agent</DialogTitle>
+            <DialogDescription>
+              Send a normal prompt to the agent in this session. Response signals never send one.
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                submit();
+              }
+            }}
+            rows={4}
+            placeholder="What do you need the agent to do?"
+            aria-label="Prompt for agent"
+            className="min-h-24 w-full resize-none rounded-xl border border-input bg-background px-3 py-2 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" disabled={!value.trim() || disabled || readOnly} onClick={submit}>
+              <ArrowUpIcon className="size-4" aria-hidden="true" /> Send
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
 }
 
 interface ComposerProps {

@@ -727,6 +727,7 @@ from omnigent.spec.types import (
 )
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.artifact_store import ArtifactStore
+from omnigent.stores.code_snapshot_store import CodeSnapshotStore
 from omnigent.stores.comment_store import CommentStore
 from omnigent.stores.conversation_store import (
     PROJECT_LABEL_KEY,
@@ -796,6 +797,7 @@ def create_sessions_router(
     mcp_pool: ServerMcpPool | None = None,
     liveness_lookup: Callable[[list[str]], dict[str, SessionLiveness]] | None = None,
     comment_store: CommentStore | None = None,
+    code_snapshot_store: CodeSnapshotStore | None = None,
     runner_tunnel_tokens: frozenset[str] | None = None,
     runner_exit_reports: RunnerExitReports | None = None,
     host_registry: HostRegistry | None = None,
@@ -875,6 +877,9 @@ def create_sessions_router(
 
     from omnigent.server.routes.sessions.routes_agent import register_agent_routes
     from omnigent.server.routes.sessions.routes_browser import register_browser_routes
+    from omnigent.server.routes.sessions.routes_code_snapshots import (
+        register_code_snapshot_routes,
+    )
     from omnigent.server.routes.sessions.routes_core import register_core_routes
     from omnigent.server.routes.sessions.routes_elicitations import register_elicitations_routes
     from omnigent.server.routes.sessions.routes_events import register_events_routes
@@ -932,6 +937,15 @@ def create_sessions_router(
         host_registry=host_registry,
     )
 
+    register_code_snapshot_routes(
+        router,
+        conversation_store=conversation_store,
+        snapshot_store=code_snapshot_store,
+        artifact_store=artifact_store,
+        auth_provider=auth_provider,
+        permission_store=permission_store,
+    )
+
     register_browser_routes(
         router,
         conversation_store=conversation_store,
@@ -953,6 +967,7 @@ def create_sessions_router(
         conversation_store=conversation_store,
         agent_store=agent_store,
         file_store=file_store,
+        code_snapshot_store=code_snapshot_store,
         artifact_store=artifact_store,
         runner_router=runner_router,
         auth_provider=auth_provider,

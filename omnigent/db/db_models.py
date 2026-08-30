@@ -1063,6 +1063,41 @@ class SqlResponseFlag(ConversationBase):
     flagged_at: Mapped[int] = mapped_column(Integer)
 
 
+class SqlResponseSignal(ConversationBase):
+    """Non-Bad human signal attached to an assistant response.
+
+    Bad remains in ``response_flags`` for deployed-client compatibility.
+    One row per signal group enforces quality/detail exclusivity without
+    coupling a signal to persisted conversation items.
+    """
+
+    __tablename__ = "response_signals"
+    __table_args__ = (
+        CheckConstraint("signal_group IN (1, 2, 3)", name="ck_response_signals_group"),
+        CheckConstraint("signal_type IN (2, 3, 4, 5)", name="ck_response_signals_type"),
+        CheckConstraint(
+            "(signal_group = 1 AND signal_type = 2) OR "
+            "(signal_group = 2 AND signal_type = 3) OR "
+            "(signal_group = 3 AND signal_type IN (4, 5))",
+            name="ck_response_signals_group_type",
+        ),
+    )
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    conversation_id: Mapped[str] = mapped_column(Uuid16(), primary_key=True)
+    response_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    signal_group: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    signal_type: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    signaled_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    signaled_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class SqlComment(OmnigentBase):
     """SQLAlchemy model for the ``comments`` table.
 
@@ -1132,6 +1167,53 @@ class SqlComment(OmnigentBase):
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (CheckConstraint("status IN (1, 2)", name="ck_comments_status"),)
+
+
+class SqlCodeSnapshot(OmnigentBase):
+    """Metadata for a raster image associated with a rendered code block."""
+
+    __tablename__ = "code_snapshots"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    conversation_id: Mapped[str] = mapped_column(Uuid16(), primary_key=True)
+    id: Mapped[str] = mapped_column(Uuid16(), primary_key=True)
+    response_id: Mapped[str] = mapped_column(String(128))
+    item_id: Mapped[str] = mapped_column(Uuid16())
+    code_block_start_offset: Mapped[int] = mapped_column(Integer)
+    language: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer)
+    capture_type: Mapped[int] = mapped_column(SmallInteger)
+    artifact_key: Mapped[str] = mapped_column(String(512), unique=True)
+    content_type: Mapped[str] = mapped_column(String(64))
+    bytes: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        CheckConstraint(
+            "capture_type IN (1, 2, 3, 4)",
+            name="ck_code_snapshots_capture_type",
+        ),
+        CheckConstraint(
+            "code_block_start_offset >= 0",
+            name="ck_code_snapshots_code_block_start_offset",
+        ),
+        Index(
+            "ix_code_snapshots_block",
+            "workspace_id",
+            "conversation_id",
+            "response_id",
+            "item_id",
+            "code_block_start_offset",
+            "created_at",
+            "id",
+        ),
+    )
 
 
 def policy_name_cksum(name: str) -> bytes:

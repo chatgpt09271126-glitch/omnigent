@@ -18,6 +18,11 @@ import { isAndroidShell, isElectronShell, isIOSShell } from "@/lib/nativeBridge"
 import { setSessionHost } from "./sessionHost";
 import { parseBackgroundTasks } from "./sse";
 import type {
+  ResponseSignalInfo,
+  ResponseSignalState,
+  ResponseSignalType,
+} from "./responseSignals";
+import type {
   BackgroundTaskInfo,
   ModelUsage,
   NativeModelOption,
@@ -260,6 +265,16 @@ interface SessionResponseWire {
   ui_settings?: Record<string, boolean>;
   /** Flagged responses at snapshot time, keyed by `response_id`. */
   flagged_responses?: Record<string, { flagged_by: string | null; flagged_at: number }>;
+  /** Generalized response signals at snapshot time. */
+  response_signals?: Record<
+    string,
+    Partial<
+      Record<
+        ResponseSignalType,
+        { signal_type: ResponseSignalType; signaled_by: string | null; signaled_at: number }
+      >
+    >
+  >;
 }
 
 interface SessionItemsResponseWire {
@@ -360,6 +375,21 @@ function sessionFromWire(wire: SessionResponseWire): Session {
       Object.entries(wire.flagged_responses ?? {}).map(([responseId, flag]) => [
         responseId,
         { flaggedBy: flag.flagged_by, flaggedAt: flag.flagged_at },
+      ]),
+    ),
+    responseSignals: Object.fromEntries(
+      Object.entries(wire.response_signals ?? {}).map(([responseId, signals]) => [
+        responseId,
+        Object.fromEntries(
+          Object.entries(signals).map(([signalType, signal]) => [
+            signalType,
+            {
+              signalType: signal.signal_type,
+              signaledBy: signal.signaled_by,
+              signaledAt: signal.signaled_at,
+            },
+          ]),
+        ) as ResponseSignalState,
       ]),
     ),
   };
@@ -794,6 +824,92 @@ export async function flagResponse(
     flagged_at: number;
   }>(res);
   return { flaggedBy: wire.flagged_by, flaggedAt: wire.flagged_at };
+}
+
+/** Set or clear one human signal on a stable assistant response. */
+export async function signalResponse(
+  sessionId: string,
+  responseId: string,
+  signalType: ResponseSignalType,
+  active: boolean,
+): Promise<{
+  changedSignal: ResponseSignalType;
+  active: boolean;
+  signaledBy: string | null;
+  signaledAt: number;
+  signals: ResponseSignalState;
+}> {
+  const res = await authenticatedFetch(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/responses/${encodeURIComponent(responseId)}/signal`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ signal_type: signalType, active }),
+    },
+  );
+  const wire = await readJsonOrThrow<{
+    changed_signal: ResponseSignalType;
+    active: boolean;
+    signaled_by: string | null;
+    signaled_at: number;
+    signals: Partial<
+      Record<
+        ResponseSignalType,
+        { signal_type: ResponseSignalType; signaled_by: string | null; signaled_at: number }
+      >
+    >;
+  }>(res);
+  const signals = Object.fromEntries(
+    Object.entries(wire.signals).map(([name, signal]) => [
+      name,
+      {
+        signalType: signal.signal_type,
+        signaledBy: signal.signaled_by,
+        signaledAt: signal.signaled_at,
+      } satisfies ResponseSignalInfo,
+    ]),
+  ) as ResponseSignalState;
+  return {
+    changedSignal: wire.changed_signal,
+    active: wire.active,
+    signaledBy: wire.signaled_by,
+    signaledAt: wire.signaled_at,
+    signals,
+  };
+}
+
+/** Broadcast a one-shot human Help effect; this does not send an agent prompt. */
+export async function requestResponseHelp(
+  sessionId: string,
+  responseId: string,
+  requestId: string,
+): Promise<void> {
+  const res = await authenticatedFetch(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/responses/${encodeURIComponent(responseId)}/help`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId }),
+    },
+  );
+  await readJsonOrThrow(res);
+}
+
+/** Broadcast a one-shot screenshot request; this does not send an agent prompt. */
+export async function requestResponseScreenshot(
+  sessionId: string,
+  responseId: string,
+  requestId: string,
+): Promise<void> {
+  const res = await authenticatedFetch(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/responses/${encodeURIComponent(responseId)}/screenshot-request`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId }),
+    },
+  );
+  await readJsonOrThrow(res);
 }
 
 interface RunnerSummaryWire {

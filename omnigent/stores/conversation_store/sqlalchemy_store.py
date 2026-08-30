@@ -36,6 +36,7 @@ from omnigent.db.db_models import (
     SqlPolicy,
     SqlProject,
     SqlResponseFlag,
+    SqlResponseSignal,
     SqlSessionPermission,
     SqlUserDailyCost,
     current_workspace_id,
@@ -73,6 +74,8 @@ from omnigent.entities import (
     NewConversationItem,
     PagedList,
     ResponseFlag,
+    ResponseSignal,
+    ResponseSignalType,
     parse_item_data,
 )
 from omnigent.session_import.models import (
@@ -109,6 +112,23 @@ _logger = logging.getLogger(__name__)
 # to the connection's next pooled use. Longer than the client's own
 # ``SEARCH_FETCH_TIMEOUT_MS`` so the browser gives up first on the happy path.
 _SEARCH_STATEMENT_TIMEOUT_MS = 15_000
+
+_RESPONSE_SIGNAL_CODES: dict[ResponseSignalType, int] = {
+    "bad": 1,
+    "good": 2,
+    "attention": 3,
+    "shorter": 4,
+    "more_detail": 5,
+}
+_RESPONSE_SIGNAL_NAMES: dict[int, ResponseSignalType] = {
+    code: name for name, code in _RESPONSE_SIGNAL_CODES.items()
+}
+_RESPONSE_SIGNAL_GROUPS: dict[ResponseSignalType, int] = {
+    "good": 1,
+    "attention": 2,
+    "shorter": 3,
+    "more_detail": 3,
+}
 
 
 class _RowCountResult(Protocol):
@@ -1932,6 +1952,33 @@ class SqlAlchemyConversationStore(ConversationStore):
                 has_more=has_more,
             )
 
+    def get_item(self, conversation_id: str, item_id: str) -> ConversationItem | None:
+        stmt = (
+            select(SqlConversationItem)
+            .options(
+                load_only(
+                    SqlConversationItem.id,
+                    SqlConversationItem.type,
+                    SqlConversationItem.status,
+                    SqlConversationItem.response_id,
+                    SqlConversationItem.created_at,
+                    SqlConversationItem.data,
+                    SqlConversationItem.created_by,
+                )
+            )
+            .where(
+                SqlConversationItem.workspace_id == current_workspace_id(),
+                SqlConversationItem.conversation_id == conversation_id,
+                SqlConversationItem.id == item_id,
+            )
+        )
+        with self._conv_session("get_item") as session:
+            row = session.scalars(stmt).one_or_none()
+            if row is None:
+                return None
+            data = self._decode_item_data_batch([row.data])[0]
+            return _to_item(row, data)
+
     def list_latest_message_items_for_conversations(
         self,
         conversation_ids: list[str],
@@ -2250,26 +2297,182 @@ class SqlAlchemyConversationStore(ConversationStore):
             ``None`` in single-user mode (mirrors comment attribution).
         :param at: Unix epoch seconds to stamp. ``None`` → current time.
         """
+        self._set_response_signal(
+            conversation_id,
+            response_id,
+            "bad",
+            flagged,
+            flagged_by,
+            at,
+            operation_name="set_response_flag",
+        )
+
+    def set_response_signal(
+        self,
+        conversation_id: str,
+        response_id: str,
+        signal_type: ResponseSignalType,
+        active: bool,
+        signaled_by: str | None,
+        at: int | None = None,
+    ) -> dict[ResponseSignalType, ResponseSignal]:
+        """Set/clear a signal, enforcing response-level exclusivity."""
+        return self._set_response_signal(
+            conversation_id,
+            response_id,
+            signal_type,
+            active,
+            signaled_by,
+            at,
+            operation_name="set_response_signal",
+        )
+
+    def _set_response_signal(
+        self,
+        conversation_id: str,
+        response_id: str,
+        signal_type: ResponseSignalType,
+        active: bool,
+        signaled_by: str | None,
+        at: int | None,
+        *,
+        operation_name: str,
+    ) -> dict[ResponseSignalType, ResponseSignal]:
+        if signal_type not in _RESPONSE_SIGNAL_CODES:
+            raise ValueError(f"unsupported response signal: {signal_type!r}")
+
         stamp = at if at is not None else now_epoch()
-        with self._conv_session("set_response_flag") as session:
-            key = (current_workspace_id(), conversation_id, response_id)
-            row = session.get(SqlResponseFlag, key)
-            if not flagged:
-                if row is not None:
-                    session.delete(row)
-                return
-            if row is None:
-                session.add(
-                    SqlResponseFlag(
-                        conversation_id=conversation_id,
-                        response_id=response_id,
-                        flagged_by=flagged_by,
-                        flagged_at=stamp,
-                    )
+        workspace_id = current_workspace_id()
+        with self._conv_session(operation_name) as session:
+            # Serialize competing signal changes for one conversation on
+            # Postgres. SQLite ignores FOR UPDATE and serializes writes itself.
+            session.execute(
+                select(SqlConversation.id)
+                .where(
+                    SqlConversation.workspace_id == workspace_id,
+                    SqlConversation.id == conversation_id,
                 )
+                .with_for_update()
+            ).scalar_one_or_none()
+
+            flag_key = (workspace_id, conversation_id, response_id)
+            flag = session.get(SqlResponseFlag, flag_key)
+            if signal_type == "bad":
+                good_key = (workspace_id, conversation_id, response_id, 1)
+                good = session.get(SqlResponseSignal, good_key)
+                if active:
+                    if good is not None:
+                        session.delete(good)
+                    if flag is None:
+                        flag = SqlResponseFlag(
+                            conversation_id=conversation_id,
+                            response_id=response_id,
+                            flagged_by=signaled_by,
+                            flagged_at=stamp,
+                        )
+                        session.add(flag)
+                    else:
+                        flag.flagged_by = signaled_by
+                        flag.flagged_at = stamp
+                elif flag is not None:
+                    session.delete(flag)
             else:
-                row.flagged_by = flagged_by
-                row.flagged_at = stamp
+                group = _RESPONSE_SIGNAL_GROUPS[signal_type]
+                key = (workspace_id, conversation_id, response_id, group)
+                row = session.get(SqlResponseSignal, key)
+                if active:
+                    if signal_type == "good" and flag is not None:
+                        session.delete(flag)
+                    if row is None:
+                        row = SqlResponseSignal(
+                            conversation_id=conversation_id,
+                            response_id=response_id,
+                            signal_group=group,
+                            signal_type=_RESPONSE_SIGNAL_CODES[signal_type],
+                            signaled_by=signaled_by,
+                            signaled_at=stamp,
+                        )
+                        session.add(row)
+                    else:
+                        row.signal_type = _RESPONSE_SIGNAL_CODES[signal_type]
+                        row.signaled_by = signaled_by
+                        row.signaled_at = stamp
+                elif row is not None and row.signal_type == _RESPONSE_SIGNAL_CODES[signal_type]:
+                    session.delete(row)
+
+            return self._response_signal_state(session, conversation_id, response_id)
+
+    @staticmethod
+    def _response_signal_state(
+        session: Session,
+        conversation_id: str,
+        response_id: str,
+    ) -> dict[ResponseSignalType, ResponseSignal]:
+        workspace_id = current_workspace_id()
+        state: dict[ResponseSignalType, ResponseSignal] = {}
+        flag = session.execute(
+            select(SqlResponseFlag).where(
+                SqlResponseFlag.workspace_id == workspace_id,
+                SqlResponseFlag.conversation_id == conversation_id,
+                SqlResponseFlag.response_id == response_id,
+            )
+        ).scalar_one_or_none()
+        if flag is not None:
+            state["bad"] = ResponseSignal(
+                signal_type="bad",
+                signaled_by=flag.flagged_by,
+                signaled_at=flag.flagged_at,
+            )
+        rows = session.execute(
+            select(SqlResponseSignal).where(
+                SqlResponseSignal.workspace_id == workspace_id,
+                SqlResponseSignal.conversation_id == conversation_id,
+                SqlResponseSignal.response_id == response_id,
+            )
+        ).scalars()
+        for row in rows:
+            name = _RESPONSE_SIGNAL_NAMES[row.signal_type]
+            state[name] = ResponseSignal(
+                signal_type=name,
+                signaled_by=row.signaled_by,
+                signaled_at=row.signaled_at,
+            )
+        return state
+
+    def list_response_signals(
+        self,
+        conversation_id: str,
+    ) -> dict[str, dict[ResponseSignalType, ResponseSignal]]:
+        """Return legacy Bad flags and additive signals as one state map."""
+        workspace_id = current_workspace_id()
+        with self._conv_session("list_response_signals") as session:
+            result: dict[str, dict[ResponseSignalType, ResponseSignal]] = {}
+            flags = session.execute(
+                select(SqlResponseFlag).where(
+                    SqlResponseFlag.workspace_id == workspace_id,
+                    SqlResponseFlag.conversation_id == conversation_id,
+                )
+            ).scalars()
+            for flag in flags:
+                result.setdefault(flag.response_id, {})["bad"] = ResponseSignal(
+                    signal_type="bad",
+                    signaled_by=flag.flagged_by,
+                    signaled_at=flag.flagged_at,
+                )
+            rows = session.execute(
+                select(SqlResponseSignal).where(
+                    SqlResponseSignal.workspace_id == workspace_id,
+                    SqlResponseSignal.conversation_id == conversation_id,
+                )
+            ).scalars()
+            for row in rows:
+                name = _RESPONSE_SIGNAL_NAMES[row.signal_type]
+                result.setdefault(row.response_id, {})[name] = ResponseSignal(
+                    signal_type=name,
+                    signaled_by=row.signaled_by,
+                    signaled_at=row.signaled_at,
+                )
+            return result
 
     def list_response_flags(
         self,
@@ -4117,6 +4320,12 @@ class SqlAlchemyConversationStore(ConversationStore):
                 delete(SqlResponseFlag).where(
                     SqlResponseFlag.workspace_id == current_workspace_id(),
                     SqlResponseFlag.conversation_id.in_(subtree_ids),
+                )
+            )
+            ap_sess.execute(
+                delete(SqlResponseSignal).where(
+                    SqlResponseSignal.workspace_id == current_workspace_id(),
+                    SqlResponseSignal.conversation_id.in_(subtree_ids),
                 )
             )
             ap_sess.execute(

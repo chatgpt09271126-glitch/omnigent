@@ -3949,6 +3949,9 @@ def server(
     from omnigent.server.auth import create_auth_provider
     from omnigent.server.server_config import config_str_list
     from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
+    from omnigent.stores.code_snapshot_store.sqlalchemy_store import (
+        SqlAlchemyCodeSnapshotStore,
+    )
     from omnigent.stores.comment_store.sqlalchemy_store import SqlAlchemyCommentStore
     from omnigent.stores.conversation_store.sqlalchemy_store import (
         SqlAlchemyConversationStore,
@@ -3988,6 +3991,7 @@ def server(
     file_store = SqlAlchemyFileStore(db_uri)
     conversation_store = SqlAlchemyConversationStore(db_uri, conv_db_uri)
     comment_store = SqlAlchemyCommentStore(db_uri)
+    code_snapshot_store = SqlAlchemyCodeSnapshotStore(db_uri)
     policy_store = SqlAlchemyPolicyStore(db_uri)
     permission_store = SqlAlchemyPermissionStore(db_uri)
     scheduled_task_store = SqlAlchemyScheduledTaskStore(db_uri)
@@ -4129,6 +4133,7 @@ def server(
         file_store=file_store,
         conversation_store=conversation_store,
         comment_store=comment_store,
+        code_snapshot_store=code_snapshot_store,
         policy_store=policy_store,
         artifact_store=artifact_store,
         agent_cache=agent_cache,

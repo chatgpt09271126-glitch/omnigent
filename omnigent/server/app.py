@@ -94,6 +94,7 @@ from omnigent.stores import (
     ConversationStore,
     FileStore,
 )
+from omnigent.stores.code_snapshot_store import CodeSnapshotStore
 from omnigent.stores.comment_store import CommentStore
 from omnigent.stores.conversation_store import SessionConnectivity, runner_seen_is_fresh
 from omnigent.stores.host_store import HostStore
@@ -910,6 +911,7 @@ def create_app(
     agent_cache: AgentCache,
     runner_tunnel_tokens: frozenset[str] | None = None,
     comment_store: CommentStore | None = None,
+    code_snapshot_store: CodeSnapshotStore | None = None,
     policy_store: PolicyStore | None = None,
     permission_store: PermissionStore | None = None,
     scheduled_task_store: ScheduledTaskStore | None = None,
@@ -949,6 +951,8 @@ def create_app(
         token-bound runner id, which is the shared remote-server
         behavior.
     :param comment_store: Store for per-conversation review comments.
+    :param code_snapshot_store: Store for per-code-block snapshot metadata.
+        ``None`` leaves the snapshot endpoints unconfigured.
     :param policy_store: Store for server-persisted policies
         (session-scoped and server-wide defaults). ``None``
         disables both the session policy and default policy
@@ -2213,6 +2217,7 @@ def create_app(
             # per-session comments fingerprint so the web app refreshes
             # its comment list on external mutations.
             comment_store=comment_store,
+            code_snapshot_store=code_snapshot_store,
             # Same allow-list the tunnel router gets: authorizes runner
             # writes to the policy-owned cost_control.* session labels.
             runner_tunnel_tokens=runner_tunnel_tokens,
