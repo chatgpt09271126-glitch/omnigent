@@ -4401,7 +4401,12 @@ export function InterviewAskAgent({
           className="top-auto bottom-0 max-h-[min(70dvh,32rem)] max-w-none -translate-y-0 rounded-b-none rounded-t-3xl p-4 sm:max-w-none"
           style={{
             top: "auto",
-            bottom: 0,
+            // Anchor to the bottom of the *visible* area (above the iOS
+            // keyboard), not the device bottom: on the native shell the
+            // WKWebView stays full-height behind the keyboard
+            // (`.ignoresSafeArea(.keyboard)`), so `position: fixed; bottom: 0`
+            // would pin this sheet underneath the keyboard, off-screen.
+            bottom: "calc(100vh - var(--omnigent-viewport-height, 100vh))",
             maxHeight:
               "calc(var(--omnigent-viewport-height, 100dvh) - var(--omnigent-safe-top, 0px) - 1rem)",
             paddingBottom: "max(1rem, var(--omnigent-safe-bottom, 0px))",

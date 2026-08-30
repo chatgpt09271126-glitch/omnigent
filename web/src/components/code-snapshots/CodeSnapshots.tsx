@@ -907,8 +907,8 @@ function SnapshotGallery({
           {selectedIndex === null ? (
             <>
               <header
-                className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4"
-                style={{ paddingTop: "var(--omnigent-safe-top, 0px)" }}
+                className="flex min-h-14 shrink-0 items-center justify-between border-b border-border px-4 py-2"
+                style={{ paddingTop: "max(0.5rem, var(--omnigent-safe-top, 0px))" }}
               >
                 <div>
                   <h2 className="font-semibold">Code snapshots</h2>
