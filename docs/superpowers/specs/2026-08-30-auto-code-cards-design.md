@@ -89,6 +89,19 @@ rasterizes, and uploads each card as a snapshot. Until those cards exist,
 the code block in the chat shows a small pending/loading affordance; once
 ready, it becomes tappable.
 
+**Background job semantics.** This reuses the same pattern as the existing
+background session-title feature (`omnigent/server/background_session_titles.py`):
+event-triggered via a fire-and-forget `asyncio.create_task(...)` the instant
+the message finishes streaming, not a polling loop or scheduled/cron job.
+One task per message containing code blocks, run once. The request/response
+or SSE stream that delivered the message is never held open waiting on it,
+so chat latency is unaffected — the only latency that exists is the gap
+between "answer visible" and "cards tappable" (expected ~1-3s depending on
+code length, covered by the pending indicator). As with the existing
+background-title task, a server restart mid-task silently drops it; that's
+an acceptable failure mode here since the cards are additive on top of an
+already-delivered answer, not required for the message to be usable.
+
 ### 4. Live glance: tap-through bypasses the grid
 
 Tapping a code block in the live chat opens the full-screen swipeable
