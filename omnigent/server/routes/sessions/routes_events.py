@@ -251,6 +251,8 @@ async def _recover_retry_session(
     session_id: str,
     conversation_store: ConversationStore,
     runner_router: RunnerRouter | None,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> dict[str, bool | str]:
     """Recover runner/terminal readiness without creating transcript input."""
     conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
@@ -304,6 +306,8 @@ async def _recover_retry_session(
             conv.runner_id,
             runner_client,
             conversation_store,
+            code_snapshot_store=code_snapshot_store,
+            artifact_store=artifact_store,
         )
         return {
             "queued": False,
@@ -317,6 +321,8 @@ async def _recover_retry_session(
             conv.runner_id,
             runner_client,
             conversation_store,
+            code_snapshot_store=code_snapshot_store,
+            artifact_store=artifact_store,
         )
         return {"queued": False, "recovered": True, "recovery": "runner_relaunched"}
 
@@ -329,6 +335,8 @@ async def _retry_session_single_flight(
     session_id: str,
     conversation_store: ConversationStore,
     runner_router: RunnerRouter | None,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> dict[str, bool | str]:
     """Share one in-flight recovery attempt across concurrent callers."""
     lock = _retry_recovery_lock(session_id)
@@ -341,6 +349,8 @@ async def _retry_session_single_flight(
                     session_id=session_id,
                     conversation_store=conversation_store,
                     runner_router=runner_router,
+                    code_snapshot_store=code_snapshot_store,
+                    artifact_store=artifact_store,
                 )
             )
             _retry_recovery_tasks[session_id] = task
@@ -575,6 +585,8 @@ def register_events_routes(
                 session_id=session_id,
                 conversation_store=conversation_store,
                 runner_router=runner_router,
+                code_snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
             )
         # ── Policy evaluation (path-agnostic) ────────────────
         # Evaluate policies BEFORE persistence/runner forwarding so
@@ -847,6 +859,8 @@ def register_events_routes(
                 wake_conv.runner_id,
                 _client,
                 conversation_store,
+                code_snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
             )
             return wake_conv, _client
 
@@ -1112,6 +1126,8 @@ def register_events_routes(
                 session_id,
                 body,
                 conversation_store,
+                code_snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
             )
             return {"queued": False, "item_id": item_id}
         if body.type == _EXTERNAL_CONVERSATION_ITEM_TYPE:
@@ -1122,6 +1138,8 @@ def register_events_routes(
                 conversation_store,
                 created_by=created_by,
                 background_title_coordinator=background_title_coordinator,
+                code_snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
             )
             return {"queued": False, "item_id": item_id}
         if body.type == _EXTERNAL_OUTPUT_TEXT_DELTA_TYPE:
@@ -1824,6 +1842,8 @@ def register_events_routes(
             conv.runner_id,
             runner_client,
             conversation_store,
+            code_snapshot_store=code_snapshot_store,
+            artifact_store=artifact_store,
         )
         _agent = agent_store.get(conv.agent_id) if conv.agent_id else None
         # Determine whether the agent has MCP servers so the runner's
@@ -2011,6 +2031,8 @@ def register_events_routes(
             conv.runner_id,
             runner_client,
             conversation_store,
+            code_snapshot_store=code_snapshot_store,
+            artifact_store=artifact_store,
         )
 
         async def _resource_snapshot() -> list[dict[str, Any]]:

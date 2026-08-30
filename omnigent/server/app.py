@@ -2642,6 +2642,8 @@ def create_app(
                 runner_id,
                 routed.client,
                 conversation_store,
+                code_snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
             )
             # The session's terminal exists as of the handshake above, so its
             # model catalogs are answerable now. Warming them here is what

@@ -665,6 +665,15 @@ _SUBAGENT_FORWARD_RECONNECT_WAIT_S = 5.0
 _managed_launch_tasks: set[asyncio.Task[None]] = set()
 
 
+# Strong references to detached auto-code-card generation tasks so they
+# can't be garbage-collected mid-rasterization (asyncio only holds weak
+# refs to tasks). Fired from both the relay text-flush path
+# (helpers._flush_relay_text) and the native-transcript-bridge persist
+# path (orchestration._persist_external_conversation_item /
+# helpers._persist_external_assistant_message); never awaited by callers.
+_auto_code_card_tasks: set[asyncio.Task[None]] = set()
+
+
 _RUNNER_SESSION_INIT_TIMEOUT_S = 10.0
 
 

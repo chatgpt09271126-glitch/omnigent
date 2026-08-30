@@ -104,6 +104,7 @@ from omnigent.server.auth import (
     LEVEL_READ,
     local_single_user_enabled,
 )
+from omnigent.server.auto_code_cards import generate_auto_code_cards
 from omnigent.server.background_session_titles import (
     BackgroundSessionTitleCoordinator,
     prepare_background_session_title,
@@ -160,6 +161,7 @@ from omnigent.server.routes._sessions.common import (  # noqa: F401
     _SUBAGENT_FORWARD_RECONNECT_WAIT_S,
     _TERMINAL_RESPONSE_EVENT_TYPES,
     _TURN_ACTOR_LABEL,
+    _auto_code_card_tasks,
     _deferred_elicitation_clear_tasks,
     _intentional_stop_sessions,
     _interrupt_fenced_sessions,
@@ -337,6 +339,7 @@ from omnigent.spec.types import (
 )
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.artifact_store import ArtifactStore
+from omnigent.stores.code_snapshot_store import CodeSnapshotStore
 from omnigent.stores.conversation_store import (
     PINNED_LABEL_KEY,
     ConversationNotFoundError,
@@ -2108,6 +2111,9 @@ async def _persist_external_conversation_item(
     conversation_store: ConversationStore,
     created_by: str | None = None,
     background_title_coordinator: BackgroundSessionTitleCoordinator | None = None,
+    *,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> str:
     """
     Persist and broadcast a conversation item produced outside AP.
@@ -2127,6 +2133,11 @@ async def _persist_external_conversation_item(
         directly in the native terminal (no pending-input entry exists
         for those). ``None`` in single-user / unauthenticated mode —
         no label is stamped in that case.
+    :param code_snapshot_store: Store for auto-generated code-card
+        snapshots, used only when the persisted item is an assistant
+        message. ``None`` disables auto code card generation.
+    :param artifact_store: Binary store backing the rasterized code
+        card PNGs. ``None`` disables auto code card generation.
     :returns: Store-assigned conversation item id.
     """
     item = _parse_external_conversation_item(body)
@@ -2189,6 +2200,32 @@ async def _persist_external_conversation_item(
         session_id, persisted, cleared_pending_id=cleared_pending_id
     )
     _drive_terminal_resolved_elicitation(session_id, persisted)
+    # Fire-and-forget: never awaited, so a slow rasterization never delays
+    # this response. Only assistant messages carry renderable code blocks;
+    # other item types (user messages, tool calls/results) are skipped.
+    if (
+        code_snapshot_store is not None
+        and artifact_store is not None
+        and item.type == "message"
+        and isinstance(item.data, MessageData)
+        and item.data.role == "assistant"
+    ):
+        _auto_card_text = _message_text(item.data.content) or ""
+        if _auto_card_text.strip():
+            # Reference kept (not just fire-and-forget) so the task isn't
+            # garbage-collected mid-flight; never awaited.
+            _auto_card_task = asyncio.create_task(
+                generate_auto_code_cards(
+                    text=_auto_card_text,
+                    conversation_id=session_id,
+                    response_id=item.response_id,
+                    item_id=persisted.id,
+                    snapshot_store=code_snapshot_store,
+                    artifact_store=artifact_store,
+                )
+            )
+            _auto_code_card_tasks.add(_auto_card_task)
+            _auto_card_task.add_done_callback(_auto_code_card_tasks.discard)
     return persisted.id
 
 
@@ -5768,6 +5805,9 @@ async def _relay_runner_stream(
     runner_client: httpx.AsyncClient,
     conversation_store: ConversationStore,
     ready: asyncio.Event | None = None,
+    *,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> None:
     """
     Run the runner-stream relay, riding out transient tunnel drops.
@@ -5794,6 +5834,11 @@ async def _relay_runner_stream(
         extracted from the runner's SSE stream.
     :param ready: Optional event set once the runner stream emits its
         ready heartbeat; see :func:`_relay_runner_stream_once`.
+    :param code_snapshot_store: Store for auto-generated code-card
+        snapshots; forwarded to :func:`_relay_runner_stream_once`.
+        ``None`` disables auto code card generation.
+    :param artifact_store: Binary store backing the rasterized code
+        card PNGs. ``None`` disables auto code card generation.
     """
     loop = asyncio.get_running_loop()
     deadline: float | None = None
@@ -5805,6 +5850,8 @@ async def _relay_runner_stream(
                 runner_client,
                 conversation_store,
                 ready,
+                code_snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
             )
             return
         except _RelayTransportLost as lost:
@@ -5897,6 +5944,9 @@ async def _relay_runner_stream_once(
     runner_client: httpx.AsyncClient,
     conversation_store: ConversationStore,
     ready: asyncio.Event | None = None,
+    *,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> None:
     """
     Subscribe to the runner's SSE stream and relay events locally.
@@ -5923,6 +5973,11 @@ async def _relay_runner_stream_once(
         slot is registered. ``None`` is accepted for direct unit tests
         that exercise relay parsing/persistence without asserting on
         startup readiness.
+    :param code_snapshot_store: Store for auto-generated code-card
+        snapshots, threaded down to each flush of relayed assistant
+        text. ``None`` disables auto code card generation.
+    :param artifact_store: Binary store backing the rasterized code
+        card PNGs. ``None`` disables auto code card generation.
     """
     text_acc: list[str] = []
     current_response_id: str | None = None
@@ -6147,6 +6202,8 @@ async def _relay_runner_stream_once(
                             text_acc,
                             current_response_id,
                             current_model,
+                            code_snapshot_store=code_snapshot_store,
+                            artifact_store=artifact_store,
                         )
 
                     conv_item = _extract_persistent_item_from_sse(
@@ -6184,6 +6241,8 @@ async def _relay_runner_stream_once(
                             text_acc,
                             current_response_id,
                             _final_model,
+                            code_snapshot_store=code_snapshot_store,
+                            artifact_store=artifact_store,
                         )
 
                     error_item = _error_item_from_sse(
@@ -6407,6 +6466,9 @@ def _ensure_runner_relay(
     runner_id: str | None,
     runner_client: httpx.AsyncClient | None,
     conversation_store: ConversationStore | None = None,
+    *,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> _RelayHandle | None:
     """
     Start (or replace) the SSE relay for ``session_id``.
@@ -6425,6 +6487,11 @@ def _ensure_runner_relay(
         ``None`` skips relay.
     :param conversation_store: Store for persisting items from
         the runner's SSE stream. ``None`` disables persistence.
+    :param code_snapshot_store: Store for auto-generated code-card
+        snapshots; forwarded to the new relay task. ``None`` disables
+        auto code card generation for this relay.
+    :param artifact_store: Binary store backing the rasterized code
+        card PNGs. ``None`` disables auto code card generation.
     :returns: The active relay handle, or ``None`` when no runner is
         bound.
     """
@@ -6473,6 +6540,8 @@ def _ensure_runner_relay(
             runner_client,
             relay_store,
             ready,
+            code_snapshot_store=code_snapshot_store,
+            artifact_store=artifact_store,
         ),
         name=f"runner-relay-{session_id}",
     )
@@ -6502,6 +6571,9 @@ async def _ensure_runner_relay_ready_impl(
     runner_id: str | None,
     runner_client: httpx.AsyncClient | None,
     conversation_store: ConversationStore | None = None,
+    *,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> _RelayHandle | None:
     """
     Start the runner SSE relay and wait for its subscription ack.
@@ -6518,6 +6590,11 @@ async def _ensure_runner_relay_ready_impl(
     :param runner_client: HTTP client pointed at ``runner_id``.
         ``None`` skips relay setup.
     :param conversation_store: Store for persisting relayed items.
+    :param code_snapshot_store: Store for auto-generated code-card
+        snapshots; forwarded to the relay. ``None`` disables auto code
+        card generation for this relay.
+    :param artifact_store: Binary store backing the rasterized code
+        card PNGs. ``None`` disables auto code card generation.
     :returns: The active relay handle, or ``None`` when no runner is
         bound.
     :raises OmnigentError: If the relay cannot observe the
@@ -6528,6 +6605,8 @@ async def _ensure_runner_relay_ready_impl(
         runner_id,
         runner_client,
         conversation_store,
+        code_snapshot_store=code_snapshot_store,
+        artifact_store=artifact_store,
     )
     if handle is None or handle.ready.is_set():
         return handle

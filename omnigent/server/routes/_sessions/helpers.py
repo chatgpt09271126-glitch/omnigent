@@ -99,6 +99,7 @@ from omnigent.server.auth import (
     LEVEL_READ,
     RESERVED_USER_PUBLIC,
 )
+from omnigent.server.auto_code_cards import generate_auto_code_cards
 from omnigent.server.host_registry import HostConnection, HostRegistry, RunnerExitReports
 from omnigent.server.managed_hosts import (
     MANAGED_SANDBOX_LABEL_NAMESPACE,
@@ -192,6 +193,7 @@ from omnigent.server.routes._sessions.common import (  # noqa: F401
     _UPLOAD_READ_CHUNK_BYTES,
     COST_CONTROL_OVERRIDE_VALUES,
     SUBAGENT_ROUTING_OVERRIDE_VALUES,
+    _auto_code_card_tasks,
     _catalog_prefetch_tasks,
     _logger,
     _managed_launch_tasks,
@@ -279,6 +281,7 @@ from omnigent.spec.types import (
 )
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.artifact_store import ArtifactStore
+from omnigent.stores.code_snapshot_store import CodeSnapshotStore
 from omnigent.stores.conversation_store import (
     PINNED_LABEL_KEY,
     ConversationNotFoundError,
@@ -2902,6 +2905,9 @@ async def _persist_external_assistant_message(
     session_id: str,
     body: SessionEventInput,
     conversation_store: ConversationStore,
+    *,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> str:
     """
     Persist and broadcast assistant text produced outside Omnigent tasks.
@@ -2914,6 +2920,10 @@ async def _persist_external_assistant_message(
     :param session_id: Session/conversation identifier.
     :param body: External assistant-message event body.
     :param conversation_store: Store used to append the message.
+    :param code_snapshot_store: Store for auto-generated code-card
+        snapshots. ``None`` disables auto code card generation.
+    :param artifact_store: Binary store backing the rasterized code
+        card PNGs. ``None`` disables auto code card generation.
     :returns: Store-assigned conversation item id.
     """
     agent_name, text, response_id = _parse_external_assistant_message(body)
@@ -2934,6 +2944,22 @@ async def _persist_external_assistant_message(
         response_id=response_id,
         agent_name=agent_name,
     )
+    # Fire-and-forget: never awaited, so a slow rasterization never delays
+    # this response. Best-effort internally; skipped when either store is
+    # unconfigured for this deployment or the text is empty/whitespace.
+    if code_snapshot_store is not None and artifact_store is not None and text.strip():
+        _auto_card_task = asyncio.create_task(
+            generate_auto_code_cards(
+                text=text,
+                conversation_id=session_id,
+                response_id=response_id,
+                item_id=persisted.id,
+                snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
+            )
+        )
+        _auto_code_card_tasks.add(_auto_card_task)
+        _auto_card_task.add_done_callback(_auto_code_card_tasks.discard)
     return persisted.id
 
 
@@ -6695,6 +6721,9 @@ async def _flush_relay_text(
     text_acc: list[str],
     response_id: str | None,
     model_id: str | None,
+    *,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> None:
     """
     Persist buffered assistant text as a message item and clear the buffer.
@@ -6735,6 +6764,12 @@ async def _flush_relay_text(
     :param text_acc: Accumulated delta strings; cleared in place on success.
     :param response_id: Turn id so the segment groups with its tool calls.
     :param model_id: Assistant agent label for the message.
+    :param code_snapshot_store: Store for auto-generated code-card
+        snapshots. ``None`` disables auto code card generation for
+        this flush (e.g. the feature isn't configured on this
+        deployment).
+    :param artifact_store: Binary store backing the rasterized code
+        card PNGs. ``None`` disables auto code card generation.
     """
     if not text_acc:
         return
@@ -6788,6 +6823,25 @@ async def _flush_relay_text(
         item=persisted[0].to_api_dict(),
     )
     session_stream.publish(session_id, done_event.model_dump())
+    # Fire-and-forget: detect fenced code blocks in the just-persisted
+    # segment and generate zoomable auto_code_card snapshots for them.
+    # Detached (never awaited) so a slow rasterization never delays the
+    # chat response; best-effort internally (a page failure is logged
+    # and skipped, never raised back here). Skipped when either store
+    # is unconfigured for this deployment.
+    if code_snapshot_store is not None and artifact_store is not None:
+        _auto_card_task = asyncio.create_task(
+            generate_auto_code_cards(
+                text=text,
+                conversation_id=session_id,
+                response_id=item.response_id,
+                item_id=persisted[0].id,
+                snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
+            )
+        )
+        _auto_code_card_tasks.add(_auto_card_task)
+        _auto_card_task.add_done_callback(_auto_code_card_tasks.discard)
 
 
 def _compact_lock(session_id: str) -> asyncio.Lock:
