@@ -1196,7 +1196,7 @@ class SqlCodeSnapshot(OmnigentBase):
 
     __table_args__ = (
         CheckConstraint(
-            "capture_type IN (1, 2, 3, 4)",
+            "capture_type IN (1, 2, 3, 4, 5)",
             name="ck_code_snapshots_capture_type",
         ),
         CheckConstraint(

@@ -10,6 +10,7 @@ SnapshotCaptureType = Literal[
     "mobile_quick_capture",
     "uploaded_image",
     "clipboard_image",
+    "auto_code_card",
 ]
 
 

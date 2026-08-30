@@ -128,3 +128,16 @@ def test_shipped_codes_are_stable() -> None:
         "failed": 4,
         "skipped": 5,
     }
+    assert ec.CODE_SNAPSHOT_CAPTURE_TYPE == {
+        "region_capture": 1,
+        "mobile_quick_capture": 2,
+        "uploaded_image": 3,
+        "clipboard_image": 4,
+        "auto_code_card": 5,
+    }
+
+
+def test_auto_code_card_capture_type_round_trips() -> None:
+    """auto_code_card capture type encodes and decodes correctly."""
+    assert ec.encode_code_snapshot_capture_type("auto_code_card") == 5
+    assert ec.decode_code_snapshot_capture_type(5) == "auto_code_card"

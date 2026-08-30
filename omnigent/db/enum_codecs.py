@@ -69,6 +69,7 @@ CODE_SNAPSHOT_CAPTURE_TYPE: dict[str, int] = {
     "mobile_quick_capture": 2,
     "uploaded_image": 3,
     "clipboard_image": 4,
+    "auto_code_card": 5,
 }
 
 # Last relay-observed turn status persisted on the conversation's metadata
