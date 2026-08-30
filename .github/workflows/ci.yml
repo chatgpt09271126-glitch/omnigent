@@ -190,6 +190,13 @@ jobs:
         # empty for the default lanes.
         run: uv sync --locked --extra all --group test ${{ matrix.extra && format('--extra {0}', matrix.extra) || '' }}
 
+      - name: Install Playwright Chromium
+        # Only the lane that exercises the code-card PNG rasterizer
+        # (omnigent/server/code_card_rendering.py) needs a real browser
+        # binary; other lanes never launch playwright at runtime.
+        if: matrix.group == 'server-rest'
+        run: uv run playwright install --with-deps chromium
+
       - name: Run pytest
         shell: bash
         env:
