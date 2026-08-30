@@ -93,3 +93,144 @@ def test_paginate_every_page_has_exact_size_when_total_exceeds_size():
         assert len(page.lines) == CODE_CARD_PAGE_SIZE, (
             f"Page {i} has {len(page.lines)} lines, expected {CODE_CARD_PAGE_SIZE}"
         )
+
+
+import pytest
+
+from omnigent.server.auto_code_cards import generate_auto_code_cards
+
+
+class _FakeArtifactStore:
+    def __init__(self):
+        self.puts: dict[str, bytes] = {}
+
+    def put(self, key: str, data: bytes) -> None:
+        self.puts[key] = data
+
+
+class _FakeSnapshotStore:
+    def __init__(self):
+        self.added: list[dict] = []
+
+    def add(self, **kwargs):
+        self.added.append(kwargs)
+        return kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_auto_code_cards_stores_one_snapshot_per_page(monkeypatch):
+    async def fake_render(page):
+        return b"\x89PNG\r\n\x1a\nfake"
+
+    monkeypatch.setattr("omnigent.server.code_card_rendering.render_code_card_png", fake_render)
+
+    artifact_store = _FakeArtifactStore()
+    snapshot_store = _FakeSnapshotStore()
+    text = "answer:\n\n```python\n" + "\n".join(f"line {i}" for i in range(45)) + "\n```\n"
+
+    await generate_auto_code_cards(
+        text=text,
+        conversation_id="conv-1",
+        response_id="resp-1",
+        item_id="item-1",
+        snapshot_store=snapshot_store,
+        artifact_store=artifact_store,
+    )
+
+    # 45 lines, page size 20, overlap 3 -> 3 pages (per Task 2's pagination test).
+    assert len(snapshot_store.added) == 3
+    for call in snapshot_store.added:
+        assert call["capture_type"] == "auto_code_card"
+        assert call["conversation_id"] == "conv-1"
+        assert call["response_id"] == "resp-1"
+        assert call["item_id"] == "item-1"
+        assert call["content_type"] == "image/png"
+        assert call["artifact_key"] in artifact_store.puts
+        assert call["bytes"] == len(artifact_store.puts[call["artifact_key"]])
+
+
+@pytest.mark.asyncio
+async def test_generate_auto_code_cards_no_op_when_no_code_blocks(monkeypatch):
+    artifact_store = _FakeArtifactStore()
+    snapshot_store = _FakeSnapshotStore()
+
+    await generate_auto_code_cards(
+        text="just prose, no code",
+        conversation_id="conv-1",
+        response_id="resp-1",
+        item_id="item-1",
+        snapshot_store=snapshot_store,
+        artifact_store=artifact_store,
+    )
+
+    assert snapshot_store.added == []
+    assert artifact_store.puts == {}
+
+
+@pytest.mark.asyncio
+async def test_generate_auto_code_cards_isolates_one_page_failure(monkeypatch):
+    """A render failure on one page must not abort the other pages."""
+    call_count = {"n": 0}
+
+    async def flaky_render(page):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("boom: simulated render failure")
+        return b"\x89PNG\r\n\x1a\nfake"
+
+    monkeypatch.setattr("omnigent.server.code_card_rendering.render_code_card_png", flaky_render)
+
+    artifact_store = _FakeArtifactStore()
+    snapshot_store = _FakeSnapshotStore()
+    text = "answer:\n\n```python\n" + "\n".join(f"line {i}" for i in range(45)) + "\n```\n"
+
+    await generate_auto_code_cards(
+        text=text,
+        conversation_id="conv-1",
+        response_id="resp-1",
+        item_id="item-1",
+        snapshot_store=snapshot_store,
+        artifact_store=artifact_store,
+    )
+
+    # 3 pages total, page 2 fails to render -> only 2 snapshots persisted.
+    assert call_count["n"] == 3
+    assert len(snapshot_store.added) == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_auto_code_cards_isolates_one_page_store_failure(monkeypatch):
+    """A snapshot_store.add failure on one page must not abort the other pages."""
+
+    async def fake_render(page):
+        return b"\x89PNG\r\n\x1a\nfake"
+
+    monkeypatch.setattr("omnigent.server.code_card_rendering.render_code_card_png", fake_render)
+
+    artifact_store = _FakeArtifactStore()
+
+    class _FlakySnapshotStore(_FakeSnapshotStore):
+        def __init__(self):
+            super().__init__()
+            self.call_count = 0
+
+        def add(self, **kwargs):
+            self.call_count += 1
+            if self.call_count == 2:
+                raise RuntimeError("boom: simulated store failure")
+            return super().add(**kwargs)
+
+    snapshot_store = _FlakySnapshotStore()
+    text = "answer:\n\n```python\n" + "\n".join(f"line {i}" for i in range(45)) + "\n```\n"
+
+    await generate_auto_code_cards(
+        text=text,
+        conversation_id="conv-1",
+        response_id="resp-1",
+        item_id="item-1",
+        snapshot_store=snapshot_store,
+        artifact_store=artifact_store,
+    )
+
+    # 3 pages total, page 2's store.add raises -> 2 snapshots persisted (1st and 3rd).
+    assert len(snapshot_store.added) == 2
