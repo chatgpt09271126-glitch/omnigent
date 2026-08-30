@@ -103,9 +103,14 @@ from omnigent.server.auto_code_cards import generate_auto_code_cards
 class _FakeArtifactStore:
     def __init__(self):
         self.puts: dict[str, bytes] = {}
+        self.deleted: list[str] = []
 
     def put(self, key: str, data: bytes) -> None:
         self.puts[key] = data
+
+    def delete(self, key: str) -> None:
+        self.deleted.append(key)
+        self.puts.pop(key, None)
 
 
 class _FakeSnapshotStore:
@@ -234,3 +239,9 @@ async def test_generate_auto_code_cards_isolates_one_page_store_failure(monkeypa
 
     # 3 pages total, page 2's store.add raises -> 2 snapshots persisted (1st and 3rd).
     assert len(snapshot_store.added) == 2
+    # The artifact uploaded for the page whose snapshot.add failed must be
+    # cleaned up so it doesn't leak in artifact storage with no snapshot row.
+    assert len(artifact_store.deleted) == 1
+    assert artifact_store.deleted[0] not in artifact_store.puts
+    persisted_keys = {call["artifact_key"] for call in snapshot_store.added}
+    assert artifact_store.deleted[0] not in persisted_keys

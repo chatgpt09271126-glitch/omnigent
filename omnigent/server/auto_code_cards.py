@@ -114,19 +114,23 @@ async def generate_auto_code_cards(
                 png_bytes = await render_code_card_png(page)
                 artifact_key = f"code_snapshots/{conversation_id}/{uuid.uuid4().hex}"
                 await asyncio.to_thread(artifact_store.put, artifact_key, png_bytes)
-                await asyncio.to_thread(
-                    snapshot_store.add,
-                    conversation_id=conversation_id,
-                    response_id=response_id,
-                    item_id=item_id,
-                    code_block_start_offset=block.start_offset,
-                    language=block.language,
-                    created_by=None,
-                    capture_type="auto_code_card",
-                    artifact_key=artifact_key,
-                    content_type="image/png",
-                    bytes=len(png_bytes),
-                )
+                try:
+                    await asyncio.to_thread(
+                        snapshot_store.add,
+                        conversation_id=conversation_id,
+                        response_id=response_id,
+                        item_id=item_id,
+                        code_block_start_offset=block.start_offset,
+                        language=block.language,
+                        created_by=None,
+                        capture_type="auto_code_card",
+                        artifact_key=artifact_key,
+                        content_type="image/png",
+                        bytes=len(png_bytes),
+                    )
+                except Exception:
+                    await asyncio.to_thread(artifact_store.delete, artifact_key)
+                    raise
             except Exception:
                 _logger.exception(
                     "Failed to generate auto code card page %s/%s for response %s",
