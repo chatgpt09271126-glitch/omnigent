@@ -800,6 +800,7 @@ function SnapshotViewer({
           "absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent p-3 transition-opacity",
           chromeVisible ? "opacity-100" : "pointer-events-none opacity-0",
         )}
+        style={{ paddingTop: "max(0.75rem, var(--omnigent-safe-top, 0px))" }}
       >
         <Button
           type="button"
@@ -905,7 +906,10 @@ function SnapshotGallery({
           <DialogPrimitive.Title className="sr-only">Code snapshot gallery</DialogPrimitive.Title>
           {selectedIndex === null ? (
             <>
-              <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
+              <header
+                className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4"
+                style={{ paddingTop: "var(--omnigent-safe-top, 0px)" }}
+              >
                 <div>
                   <h2 className="font-semibold">Code snapshots</h2>
                   <p className="text-sm text-muted-foreground">
