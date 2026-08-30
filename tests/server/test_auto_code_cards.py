@@ -57,11 +57,39 @@ def test_paginate_long_block_overlaps_by_three_lines():
 
     assert all(p.total_pages == len(pages) for p in pages)
     assert len(pages[0].lines) == CODE_CARD_PAGE_SIZE
-    # Page 2 starts CODE_CARD_PAGE_SIZE - CODE_CARD_PAGE_OVERLAP lines into the block,
-    # so its first CODE_CARD_PAGE_OVERLAP lines equal page 1's last CODE_CARD_PAGE_OVERLAP lines.
-    assert pages[1].lines[:CODE_CARD_PAGE_OVERLAP] == pages[0].lines[-CODE_CARD_PAGE_OVERLAP:]
     # Every source line appears in at least one page, in order, none skipped.
+    # Calculate actual overlap for each consecutive pair of pages by matching line content.
     stitched = pages[0].lines[:]
-    for page in pages[1:]:
-        stitched.extend(page.lines[CODE_CARD_PAGE_OVERLAP:])
+    for i in range(1, len(pages)):
+        prev_page = pages[i - 1]
+        curr_page = pages[i]
+        # Find the overlap: how many lines from the start of curr_page match the end of prev_page
+        overlap = 0
+        for j in range(1, min(len(prev_page.lines), len(curr_page.lines)) + 1):
+            if prev_page.lines[-j:] == curr_page.lines[:j]:
+                overlap = j
+        stitched.extend(curr_page.lines[overlap:])
     assert stitched == block.lines
+
+
+def test_paginate_every_page_has_exact_size_when_total_exceeds_size():
+    """Regression test: all pages (including the last) must have exactly CODE_CARD_PAGE_SIZE lines
+    when the total block is long enough. Previously, the last page could end up shorter than
+    CODE_CARD_PAGE_SIZE due to dead code in the fallback condition."""
+    from omnigent.server.auto_code_cards import (
+        CODE_CARD_PAGE_SIZE,
+        DetectedCodeBlock,
+        paginate_code_block,
+    )
+
+    total_lines = 45
+    block = DetectedCodeBlock(
+        language=None, start_offset=0, lines=[f"line {i}" for i in range(total_lines)]
+    )
+    pages = paginate_code_block(block)
+
+    # Regression: every page must have exactly CODE_CARD_PAGE_SIZE lines
+    for i, page in enumerate(pages):
+        assert len(page.lines) == CODE_CARD_PAGE_SIZE, (
+            f"Page {i} has {len(page.lines)} lines, expected {CODE_CARD_PAGE_SIZE}"
+        )

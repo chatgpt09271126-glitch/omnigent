@@ -65,8 +65,8 @@ def paginate_code_block(block: DetectedCodeBlock) -> list[CodeCardPage]:
     starts = list(range(0, total - CODE_CARD_PAGE_OVERLAP, stride))
     # Ensure the final page reaches the last line exactly once, even if the
     # last stride step would otherwise leave a short trailing remainder.
-    if starts[-1] + CODE_CARD_PAGE_SIZE < total:
-        starts.append(total - CODE_CARD_PAGE_SIZE)
+    if starts[-1] + CODE_CARD_PAGE_SIZE > total:
+        starts[-1] = total - CODE_CARD_PAGE_SIZE
 
     pages = [
         CodeCardPage(
