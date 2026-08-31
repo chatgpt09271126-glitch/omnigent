@@ -545,6 +545,34 @@ describe("code snapshots", () => {
     expect(await screen.findByTestId("snapshot-viewer")).toBeVisible();
   }, 10000);
 
+  it("stops polling after repeated fetch errors and stays non-tappable with no error surfaced", async () => {
+    vi.mocked(authenticatedFetch).mockImplementation(async () => {
+      throw new Error("network error");
+    });
+    renderCodeBlock();
+
+    await screen.findByTestId("auto-card-pending-indicator");
+
+    // Wait for the poll to give up (bounded attempts, ~1.5s apart) and the
+    // pending indicator to disappear on its own, with no error UI shown.
+    await waitFor(() => expect(screen.queryByTestId("auto-card-pending-indicator")).toBeNull(), {
+      timeout: 10000,
+    });
+
+    expect(screen.queryByText(/error/i)).toBeNull();
+
+    const codeBody = document.querySelector('[data-streamdown="code-block-body"]');
+    expect(codeBody).not.toBeNull();
+    fireEvent.pointerDown(codeBody!, { clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(codeBody!, { clientX: 50, clientY: 50 });
+    expect(screen.queryByTestId("snapshot-viewer")).toBeNull();
+
+    // No further fetch attempts should occur once the budget is exhausted.
+    const callCountAfterStop = vi.mocked(authenticatedFetch).mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    expect(vi.mocked(authenticatedFetch).mock.calls.length).toBe(callCountAfterStop);
+  }, 15000);
+
   it("does not open the viewer on a click-and-drag gesture used to select text", async () => {
     installSnapshotApi([snapshot("first"), snapshot("second")]);
     renderCodeBlock();

@@ -551,9 +551,13 @@ function useAutoCardPending(origin: CodeSnapshotOrigin, hasSnapshots: boolean): 
   });
 
   useEffect(() => {
-    if (!stillWaiting || query.dataUpdatedAt === 0) return;
+    if (!stillWaiting) return;
+    // Count a successful fetch (dataUpdatedAt changes) or a failed one
+    // (errorUpdatedAt changes) as one attempt, so a repeatedly erroring
+    // fetch still exhausts the budget instead of polling forever.
+    if (query.dataUpdatedAt === 0 && query.errorUpdatedAt === 0) return;
     setAttempts((a) => a + 1);
-  }, [query.dataUpdatedAt, stillWaiting]);
+  }, [query.dataUpdatedAt, query.errorUpdatedAt, stillWaiting]);
 
   // Reset the attempt budget if the underlying block changes identity.
   useEffect(() => {
