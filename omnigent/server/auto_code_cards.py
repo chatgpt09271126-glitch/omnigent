@@ -59,6 +59,10 @@ class CodeCardPage:
     page_index: int
     total_pages: int
     lines: list[str]
+    # 0-indexed line number, within ``block.lines``, of this page's first
+    # rendered line. Lets the renderer show correct gutter numbers for pages
+    # after the first (e.g. a page starting mid-block shows "18", "19", ...).
+    start_line: int
 
 
 def find_code_blocks(text: str) -> list[DetectedCodeBlock]:
@@ -124,7 +128,9 @@ def paginate_code_block(block: DetectedCodeBlock) -> list[CodeCardPage]:
     """
     total = len(block.lines)
     if total <= CODE_CARD_PAGE_SIZE:
-        return [CodeCardPage(block=block, page_index=0, total_pages=1, lines=block.lines)]
+        return [
+            CodeCardPage(block=block, page_index=0, total_pages=1, lines=block.lines, start_line=0)
+        ]
 
     stride = CODE_CARD_PAGE_SIZE - CODE_CARD_PAGE_OVERLAP
     starts = list(range(0, total - CODE_CARD_PAGE_OVERLAP, stride))
@@ -139,6 +145,7 @@ def paginate_code_block(block: DetectedCodeBlock) -> list[CodeCardPage]:
             page_index=i,
             total_pages=len(starts),
             lines=block.lines[start : start + CODE_CARD_PAGE_SIZE],
+            start_line=start,
         )
         for i, start in enumerate(starts)
     ]

@@ -137,6 +137,11 @@ dependencies = [
     # dep via pytest-playwright; declared directly now that production code
     # imports it.
     "playwright>=1.40,<2",
+    # Syntax highlighting for auto-generated code card PNGs
+    # (omnigent/server/code_card_rendering.py). Previously only a transitive
+    # dep pulled in by other packages; declared directly now that production
+    # code imports it.
+    "pygments>=2.17,<3",
 ]
 
 [project.optional-dependencies]
