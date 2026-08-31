@@ -514,11 +514,44 @@ describe("code snapshots", () => {
     await screen.findByRole("button", { name: "Open 2 code snapshots" });
     const codeBody = document.querySelector('[data-streamdown="code-block-body"]');
     expect(codeBody).not.toBeNull();
-    fireEvent.click(codeBody!);
+    fireEvent.pointerDown(codeBody!, { clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(codeBody!, { clientX: 50, clientY: 50 });
 
     expect(await screen.findByTestId("snapshot-viewer")).toBeVisible();
     expect(screen.queryByTestId("snapshot-gallery")).toBeNull();
     expect(screen.getByText("1 of 2")).toBeInTheDocument();
+  });
+
+  it("does not open the viewer on a click-and-drag gesture used to select text", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second")]);
+    renderCodeBlock();
+
+    await screen.findByRole("button", { name: "Open 2 code snapshots" });
+    const codeBody = document.querySelector('[data-streamdown="code-block-body"]');
+    expect(codeBody).not.toBeNull();
+    fireEvent.pointerDown(codeBody!, { clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(codeBody!, { clientX: 90, clientY: 40 });
+
+    expect(screen.queryByTestId("snapshot-viewer")).toBeNull();
+  });
+
+  it("does not open the viewer when the pointer up leaves an active text selection", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second")]);
+    renderCodeBlock();
+
+    await screen.findByRole("button", { name: "Open 2 code snapshots" });
+    const codeBody = document.querySelector('[data-streamdown="code-block-body"]');
+    expect(codeBody).not.toBeNull();
+
+    const getSelectionSpy = vi
+      .spyOn(window, "getSelection")
+      .mockReturnValue({ toString: () => "selected text" } as Selection);
+
+    fireEvent.pointerDown(codeBody!, { clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(codeBody!, { clientX: 50, clientY: 50 });
+
+    expect(screen.queryByTestId("snapshot-viewer")).toBeNull();
+    getSelectionSpy.mockRestore();
   });
 
   it("keeps the toolbar's gallery button opening the grid, not the scoped viewer", async () => {

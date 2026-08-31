@@ -8,7 +8,14 @@ import type { CodeSnapshotOrigin } from "@/lib/codeSnapshotsApi";
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, WrapTextIcon } from "lucide-react";
-import type { ComponentProps, ComponentType, HTMLAttributes, ReactElement, ReactNode } from "react";
+import type {
+  ComponentProps,
+  ComponentType,
+  HTMLAttributes,
+  PointerEvent as ReactPointerEvent,
+  ReactElement,
+  ReactNode,
+} from "react";
 import {
   cloneElement,
   createContext,
@@ -503,13 +510,46 @@ function ChatCodeBlockWrapToggle({ wrap, onToggle }: { wrap: boolean; onToggle: 
 // overlay) because React bubbles synthetic events along the component tree,
 // not the DOM tree — the toolbar's gallery dialog is rendered through a
 // portal, so wrapping it here would also catch clicks inside that gallery.
+// Distance (px) within which mousedown/mouseup are still considered the same
+// point rather than a drag gesture.
+const TAP_DRAG_THRESHOLD_PX = 4;
+
 function ChatCodeBlockTapToOpen({ block }: { block: ReactNode }) {
   const { snapshots } = useCodeSnapshotBlock();
   const [viewerOpen, setViewerOpen] = useState(false);
+  const downPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    downPointRef.current = { x: event.clientX, y: event.clientY };
+  }, []);
+
+  const handlePointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const downPoint = downPointRef.current;
+      downPointRef.current = null;
+      if (snapshots.length === 0 || !downPoint) return;
+
+      const dx = event.clientX - downPoint.x;
+      const dy = event.clientY - downPoint.y;
+      const isDrag = Math.hypot(dx, dy) > TAP_DRAG_THRESHOLD_PX;
+      if (isDrag) return;
+
+      // A non-empty selection means the click was for selecting text, not
+      // opening the viewer, even if mousedown/mouseup landed at one point
+      // (e.g. a double-click that selected a word).
+      const hasSelection = Boolean(window.getSelection()?.toString());
+      if (hasSelection) return;
+
+      setViewerOpen(true);
+    },
+    [snapshots.length],
+  );
 
   return (
     <>
-      <div onClick={() => snapshots.length > 0 && setViewerOpen(true)}>{block}</div>
+      <div onPointerDown={handlePointerDown} onPointerUp={handlePointerUp}>
+        {block}
+      </div>
       <AutoCardViewer open={viewerOpen} onOpenChange={setViewerOpen} />
     </>
   );
