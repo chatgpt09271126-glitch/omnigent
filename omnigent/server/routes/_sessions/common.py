@@ -673,6 +673,44 @@ _managed_launch_tasks: set[asyncio.Task[None]] = set()
 # helpers._persist_external_assistant_message); never awaited by callers.
 _auto_code_card_tasks: set[asyncio.Task[None]] = set()
 
+# Upper bound for draining in-flight auto-code-card renders on graceful
+# shutdown. A page renders in ~0.7s via one shared headless-Chromium
+# instance, so a handful of pages finishes in a few seconds; this needs to
+# stay comfortably under whatever SIGTERM->SIGKILL grace period the hosting
+# platform (Railway) allows, which can't be verified from this codebase.
+_AUTO_CODE_CARD_DRAIN_TIMEOUT_S = 20.0
+
+
+async def drain_auto_code_card_tasks(
+    timeout_seconds: float = _AUTO_CODE_CARD_DRAIN_TIMEOUT_S,
+) -> None:
+    """Wait for in-flight auto-code-card renders to finish before shutdown.
+
+    Unlike a cancel-on-shutdown pattern, this gives detached render tasks a
+    real chance to persist before the process exits (e.g. under Railway
+    scale-to-zero, where SIGTERM lands right after the response finishes
+    streaming). If tasks are still pending after ``timeout_seconds``, they
+    are cancelled so shutdown can proceed rather than hang indefinitely.
+    """
+    pending = [task for task in _auto_code_card_tasks if not task.done()]
+    if not pending:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        still_pending = [task for task in pending if not task.done()]
+        for task in still_pending:
+            task.cancel()
+        _logger.warning(
+            "drain_auto_code_card_tasks: timed out after %.1fs, abandoning "
+            "%d in-flight task(s)",
+            timeout_seconds,
+            len(still_pending),
+        )
+
 
 _RUNNER_SESSION_INIT_TIMEOUT_S = 10.0
 

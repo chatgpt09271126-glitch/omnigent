@@ -1318,6 +1318,17 @@ def create_app(
         try:
             yield
         finally:
+            # Give in-flight auto-code-card renders a real chance to finish
+            # and persist before anything they depend on (artifact_store,
+            # code_snapshot_store) or the harness/runner infra below gets
+            # torn down — otherwise a Railway scale-to-zero SIGTERM can kill
+            # them mid-render with no error logged. Must run first.
+            from omnigent.server.routes._sessions.common import (
+                drain_auto_code_card_tasks,
+            )
+
+            await drain_auto_code_card_tasks()
+
             # Run completion is event-driven (the _publish_status hook) plus a
             # lazy-on-read stale backstop — there is no run-reconciler task to
             # cancel. Only the per-job scheduler holds timers that need stopping.
