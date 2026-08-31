@@ -2050,6 +2050,7 @@ def create_runner_app(
     _session_spec_locks: dict[str, asyncio.Lock] = {}  # session_id → spec resolution lock
     _session_init_tasks: dict[tuple[str, str, str | None], asyncio.Task[JSONResponse]] = {}
     _session_init_envelopes: dict[str, tuple[float, RunnerSessionInitEnvelope]] = {}
+    _session_reasoning_effort: dict[str, str] = {}
     _session_skills_cache: dict[str, tuple[float, list[SkillSpec]]] = {}
     _session_workspace_cache: dict[str, str | None] = {}  # session_id → workspace path
     _session_cursor_model_names: dict[str, dict[str, str]] = {}
@@ -2604,6 +2605,10 @@ def create_runner_app(
         _session_workspace_cache[session_id] = snapshot.workspace
         if envelope.sub_agent_name:
             _session_sub_agent_names[session_id] = envelope.sub_agent_name
+        if snapshot.reasoning_effort:
+            _session_reasoning_effort[session_id] = snapshot.reasoning_effort
+        else:
+            _session_reasoning_effort.pop(session_id, None)
         _session_init_envelopes[session_id] = (time.monotonic(), envelope)
         return _SessionInitContext(envelope=envelope)
 
@@ -3551,6 +3556,7 @@ def create_runner_app(
         _session_snapshot_cache.pop(session_id, None)
         _session_snapshot_locks.pop(session_id, None)
         _session_init_envelopes.pop(session_id, None)
+        _session_reasoning_effort.pop(session_id, None)
         _session_spec_locks.pop(session_id, None)
         _session_fs_registries.pop(session_id, None)
         _session_agent_ids.pop(session_id, None)
@@ -6176,6 +6182,26 @@ def create_runner_app(
                 _model_override,
                 extra={"session_id": conv},
             )
+        raw_reasoning = msg_body.get("reasoning")
+        reasoning_effort = raw_reasoning.get("effort") if isinstance(raw_reasoning, dict) else None
+        if not isinstance(reasoning_effort, str) or not reasoning_effort:
+            reasoning_effort = _session_reasoning_effort.get(conv)
+        if reasoning_effort:
+            from omnigent.reasoning_effort import efforts_for_harness, format_supported
+
+            supported_efforts = efforts_for_harness(harness_name)
+            if supported_efforts is None or reasoning_effort in supported_efforts:
+                harness_body["reasoning"] = {"effort": reasoning_effort}
+            else:
+                _logger.warning(
+                    "_run_turn_bg: conv=%s dropping reasoning effort %r; harness %s accepts %s",
+                    conv,
+                    reasoning_effort,
+                    harness_name,
+                    format_supported(supported_efforts)
+                    if supported_efforts
+                    else "no effort override",
+                )
         if _session_histories[conv]:
             harness_body["content"] = _session_histories[conv]
         else:
@@ -7224,16 +7250,20 @@ def create_runner_app(
 
         if body_type == "effort_change":
             harness = _session_harness_name(conversation_id)
+            effort = body.get("effort") if isinstance(body, dict) else None
+            if effort is not None and not isinstance(effort, str):
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_input",
+                        "detail": "Body 'effort' must be a string or null",
+                    },
+                )
+            if effort:
+                _session_reasoning_effort[conversation_id] = effort
+            else:
+                _session_reasoning_effort.pop(conversation_id, None)
             if harness in ("claude-native", "codex-native"):
-                effort = body.get("effort") if isinstance(body, dict) else None
-                if effort is not None and not isinstance(effort, str):
-                    return JSONResponse(
-                        status_code=400,
-                        content={
-                            "error": "invalid_input",
-                            "detail": "Body 'effort' must be a string or null",
-                        },
-                    )
                 if harness == "codex-native":
                     return await _handle_codex_native_settings_update(
                         conversation_id,

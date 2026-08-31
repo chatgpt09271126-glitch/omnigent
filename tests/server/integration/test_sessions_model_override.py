@@ -376,6 +376,33 @@ async def test_runner_path_forwards_persisted_model_override(
     )
 
 
+async def test_runner_path_forwards_persisted_reasoning_effort(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default runner path forwards the persisted reasoning effort."""
+    captured = _stub_runner_client(monkeypatch)
+
+    agent = await create_test_agent(client)
+    session = await _create_session(client, agent["id"])
+    sid = session["id"]
+    patch = await client.patch(f"/v1/sessions/{sid}", json={"reasoning_effort": "low"})
+    assert patch.status_code == 200, patch.text
+
+    resp = await client.post(
+        f"/v1/sessions/{sid}/events",
+        json={
+            "type": "message",
+            "data": {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+            },
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    assert captured["body"]["reasoning"] == {"effort": "low"}
+
+
 async def test_create_time_model_override_forwards_on_first_event(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

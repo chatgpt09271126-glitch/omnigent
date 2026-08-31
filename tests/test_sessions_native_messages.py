@@ -65,6 +65,18 @@ def test_codex_native_session_uses_codex_harness_for_web_messages() -> None:
     }
 
 
+def test_codex_native_message_carries_persisted_reasoning_effort() -> None:
+    """A native Codex message carries the session's selected effort in-band."""
+    from omnigent.server.routes import sessions as sessions_routes
+
+    conv = _conversation_with_wrapper("codex-native-ui")
+    conv.reasoning_effort = "low"
+
+    event = sessions_routes._build_native_terminal_message_event(conv, _message_event())
+
+    assert event["reasoning"] == {"effort": "low"}
+
+
 def test_kiro_native_session_uses_kiro_harness_for_web_messages() -> None:
     """Kiro-native web messages use the native bypass, like Codex."""
     from omnigent.server.routes import sessions as sessions_routes

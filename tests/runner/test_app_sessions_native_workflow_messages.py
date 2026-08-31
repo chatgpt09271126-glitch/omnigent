@@ -873,6 +873,67 @@ async def test_forwarded_model_override_reaches_the_harness() -> None:
 
 
 @pytest.mark.asyncio
+async def test_forwarded_reasoning_effort_reaches_the_harness() -> None:
+    """The runner preserves an in-band reasoning effort in the harness request."""
+    hc = _ScriptedHarnessClient(
+        [
+            _sse({"type": "response.created", "response": {"id": "resp_1"}}),
+            _sse({"type": "response.completed", "response": {"id": "resp_1"}}),
+        ]
+    )
+    app = create_runner_app(
+        process_manager=_FakeProcessManager(hc),  # type: ignore[arg-type]
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+    )
+
+    async with _runner_client(app) as client:
+        resp = await client.post(
+            "/v1/sessions/ee1f2b3c4d5e6f708192a3b4c5d6e7f8/events",
+            json={
+                "type": "message",
+                "role": "user",
+                "model": "test-agent",
+                "content": [{"type": "input_text", "text": "hi"}],
+                "harness": "codex-native",
+                "reasoning": {"effort": "low"},
+            },
+        )
+        assert resp.status_code == 202
+        for _ in range(200):
+            if hc.posted_bodies:
+                break
+            await asyncio.sleep(0.01)
+
+        assert hc.posted_bodies, "harness never received a turn"
+        assert hc.posted_bodies[0].get("reasoning") == {"effort": "low"}
+
+        effort_resp = await client.post(
+            "/v1/sessions/ee1f2b3c4d5e6f708192a3b4c5d6e7f8/events",
+            json={"type": "effort_change", "effort": "high"},
+        )
+        assert effort_resp.status_code == 204
+        hc.posted_bodies.clear()
+        resp = await client.post(
+            "/v1/sessions/ee1f2b3c4d5e6f708192a3b4c5d6e7f8/events",
+            json={
+                "type": "message",
+                "role": "user",
+                "model": "test-agent",
+                "content": [{"type": "input_text", "text": "again"}],
+                "harness": "codex-native",
+            },
+        )
+        assert resp.status_code == 202
+        for _ in range(200):
+            if hc.posted_bodies:
+                break
+            await asyncio.sleep(0.01)
+
+    assert hc.posted_bodies, "harness never received the updated effort"
+    assert hc.posted_bodies[0].get("reasoning") == {"effort": "high"}
+
+
+@pytest.mark.asyncio
 async def test_buffered_continuation_skips_transient_idle() -> None:
     """End-of-turn `idle` is suppressed when a buffered message will start a new turn."""
     import asyncio as _aio

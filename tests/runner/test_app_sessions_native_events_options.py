@@ -199,15 +199,11 @@ async def test_events_effort_change_on_non_native_session_is_204_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Non-native sessions accept effort_change and 204 without side effects.
+    Non-native sessions accept effort_change and apply it to the next turn.
 
     In-process harnesses (default / claude-sdk / openai-agents / codex)
-    re-read the persisted ``reasoning_effort`` from store on each
-    turn, so they need no runtime notification when it changes. The
-    Omnigent server still POSTs ``effort_change`` to ``/events`` for every
-    PATCH (it's harness-agnostic), so the runner must accept the
-    event and 204 — never reach the slash-command injector, never
-    forward to the harness scaffold.
+    receive the updated effort in the next harness request. The notification
+    itself still returns 204 without reaching a native slash-command injector.
     """
     from omnigent.spec.types import ExecutorSpec
 

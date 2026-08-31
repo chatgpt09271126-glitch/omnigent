@@ -4142,6 +4142,8 @@ def _build_native_terminal_message_event(
     # inject as ONE locked step, so the switch can't race the message.
     if model_override is not None:
         event["model_override"] = model_override
+    if conv.reasoning_effort is not None:
+        event["reasoning"] = {"effort": conv.reasoning_effort}
     return event
 
 
@@ -5155,6 +5157,8 @@ async def _forward_event_to_runner(
     # ────────────────────────────────────────────────────────────────
     if effective_runner_override is not None:
         runner_body["model_override"] = effective_runner_override
+    if conv.reasoning_effort is not None:
+        runner_body["reasoning"] = {"effort": conv.reasoning_effort}
     # Per-session brain-harness override — create-time only, so no
     # per-event value exists; the persisted column is the source.
     # _routed_harness is non-None when the child routing path resolved one
