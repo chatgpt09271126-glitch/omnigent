@@ -131,7 +131,7 @@ export function CodeSnapshotBlockProvider({
   return <CodeSnapshotContext.Provider value={value}>{children}</CodeSnapshotContext.Provider>;
 }
 
-function useCodeSnapshotBlock(): CodeSnapshotContextValue {
+export function useCodeSnapshotBlock(): CodeSnapshotContextValue {
   const context = useContext(CodeSnapshotContext);
   if (!context) throw new Error("Code snapshot controls require CodeSnapshotBlockProvider");
   return context;
@@ -840,6 +840,51 @@ function SnapshotViewer({
         onClick={() => changeIndex(index + 1)}
       />
     </div>
+  );
+}
+
+/**
+ * Opens `SnapshotViewer` directly, scoped to one code block's own snapshots
+ * (its auto-generated code cards). Bypasses `SnapshotGallery`'s grid — used
+ * for tap-to-open on the code block itself, not the toolbar's gallery button.
+ */
+export function AutoCardViewer({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { snapshots } = useCodeSnapshotBlock();
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    if (open) setIndex(0);
+  }, [open]);
+
+  return (
+    <DialogPrimitive.Root open={open && snapshots.length > 0} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal container={getEmbedRoot() ?? undefined}>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-xs" />
+        <DialogPrimitive.Content
+          data-testid="auto-card-viewer"
+          aria-describedby={undefined}
+          className="fixed inset-0 z-[130] overflow-hidden bg-background text-foreground outline-none"
+          onInteractOutside={(event) => event.preventDefault()}
+        >
+          <DialogPrimitive.Title className="sr-only">Code snapshot viewer</DialogPrimitive.Title>
+          {snapshots.length > 0 && (
+            <SnapshotViewer
+              snapshots={snapshots}
+              index={Math.min(index, snapshots.length - 1)}
+              onIndexChange={setIndex}
+              onBack={() => onOpenChange(false)}
+              onClose={() => onOpenChange(false)}
+            />
+          )}
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }
 

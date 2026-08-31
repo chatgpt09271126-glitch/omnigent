@@ -507,6 +507,30 @@ describe("code snapshots", () => {
     expect(viewport).toHaveAttribute("data-offset-x", "0.0");
   });
 
+  it("opens the viewer directly for a code block's own snapshots, without the grid", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second")]);
+    renderCodeBlock();
+
+    await screen.findByRole("button", { name: "Open 2 code snapshots" });
+    const codeBody = document.querySelector('[data-streamdown="code-block-body"]');
+    expect(codeBody).not.toBeNull();
+    fireEvent.click(codeBody!);
+
+    expect(await screen.findByTestId("snapshot-viewer")).toBeVisible();
+    expect(screen.queryByTestId("snapshot-gallery")).toBeNull();
+    expect(screen.getByText("1 of 2")).toBeInTheDocument();
+  });
+
+  it("keeps the toolbar's gallery button opening the grid, not the scoped viewer", async () => {
+    installSnapshotApi([snapshot("first")]);
+    renderCodeBlock();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 code snapshots" }));
+
+    expect(screen.getByRole("dialog", { name: "Code snapshot gallery" })).toBeInTheDocument();
+    expect(screen.queryByTestId("auto-card-viewer")).toBeNull();
+  });
+
   it("allows read-only viewing without capture, import, or deletion controls", async () => {
     installSnapshotApi([snapshot("first")]);
     renderCodeBlock(false);

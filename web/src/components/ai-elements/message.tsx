@@ -32,9 +32,11 @@ import {
 } from "streamdown";
 
 import {
+  AutoCardViewer,
   CodeSnapshotBlockProvider,
   CodeSnapshotDropZone,
   CodeSnapshotToolbarControls,
+  useCodeSnapshotBlock,
 } from "@/components/code-snapshots/CodeSnapshots";
 
 import {
@@ -495,6 +497,24 @@ function ChatCodeBlockWrapToggle({ wrap, onToggle }: { wrap: boolean; onToggle: 
   );
 }
 
+// Tapping a code block's own body opens its auto-generated code cards
+// directly in the full-screen viewer, scoped to just this block, bypassing
+// the grid gallery. This wraps only `block` (never the sibling toolbar
+// overlay) because React bubbles synthetic events along the component tree,
+// not the DOM tree — the toolbar's gallery dialog is rendered through a
+// portal, so wrapping it here would also catch clicks inside that gallery.
+function ChatCodeBlockTapToOpen({ block }: { block: ReactNode }) {
+  const { snapshots } = useCodeSnapshotBlock();
+  const [viewerOpen, setViewerOpen] = useState(false);
+
+  return (
+    <>
+      <div onClick={() => snapshots.length > 0 && setViewerOpen(true)}>{block}</div>
+      <AutoCardViewer open={viewerOpen} onOpenChange={setViewerOpen} />
+    </>
+  );
+}
+
 function ChatCodeBlockPre({ children, node }: ComponentProps<"pre"> & ExtraProps) {
   const snapshotContext = useContext(CodeSnapshotRenderContext);
   const streamdownBlockStartOffset = useContext(CodeSnapshotBlockStartContext);
@@ -516,9 +536,10 @@ function ChatCodeBlockPre({ children, node }: ComponentProps<"pre"> & ExtraProps
     ? cloneElement(children, { "data-block": "true" } as Record<string, unknown>)
     : children;
 
+  const tapToOpenEnabled = Boolean(snapshotContext && codeBlockStartOffset !== null);
   const rendered = (
     <div className={cn("relative", wrap && "chat-code-wrap")}>
-      {block}
+      {tapToOpenEnabled ? <ChatCodeBlockTapToOpen block={block} /> : block}
       {/* Overlay actions, anchored left of Streamdown's own download button
           (which sits at the header's right edge). A flex row lets the buttons
           self-arrange, so neither needs a hardcoded horizontal offset. */}
