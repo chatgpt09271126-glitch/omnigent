@@ -932,7 +932,7 @@ async def test_on_runner_connect_restarts_relay_via_router(
     real_ensure = sessions_routes._ensure_runner_relay
     ensure_calls: list[tuple[str, str | None, Any]] = []
 
-    def _spy_ensure(sid, rid, client, store=None):  # type: ignore[no-untyped-def]
+    def _spy_ensure(sid, rid, client, store=None, *, code_snapshot_store=None, artifact_store=None):  # type: ignore[no-untyped-def]
         ensure_calls.append((sid, rid, client))
 
     sessions_routes._ensure_runner_relay = _spy_ensure  # type: ignore[assignment]
