@@ -507,6 +507,139 @@ describe("code snapshots", () => {
     expect(viewport).toHaveAttribute("data-offset-x", "0.0");
   });
 
+  it("renders visible, clickable prev/next chevrons instead of screen-reader-only buttons", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second"), snapshot("third")]);
+    renderCodeBlock();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open 3 code snapshots" }));
+    const gallery = screen.getByRole("dialog", { name: "Code snapshot gallery" });
+    fireEvent.click(within(gallery).getByRole("button", { name: "Open snapshot 2 of 3" }));
+
+    const previous = within(gallery).getByRole("button", { name: "Previous snapshot" });
+    const next = within(gallery).getByRole("button", { name: "Next snapshot" });
+    expect(previous.className).not.toMatch(/\bsr-only\b/);
+    expect(next.className).not.toMatch(/\bsr-only\b/);
+
+    fireEvent.click(next);
+    expect(within(gallery).getByText("3 of 3")).toBeInTheDocument();
+  });
+
+  function setupSwipeViewport() {
+    const viewport = screen.getByTestId("snapshot-viewer-viewport");
+    vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({
+      bottom: 600,
+      height: 600,
+      left: 0,
+      right: 300,
+      top: 0,
+      width: 300,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    return viewport;
+  }
+
+  it("swiping left past the threshold at 1x zoom navigates to the next snapshot", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second"), snapshot("third")]);
+    renderCodeBlock();
+    fireEvent.click(await screen.findByRole("button", { name: "Open 3 code snapshots" }));
+    const gallery = screen.getByRole("dialog", { name: "Code snapshot gallery" });
+    fireEvent.click(within(gallery).getByRole("button", { name: "Open snapshot 1 of 3" }));
+    const viewport = setupSwipeViewport();
+
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 250, clientY: 300 });
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 100, clientY: 300 });
+    fireEvent.pointerUp(viewport, { pointerId: 1, clientX: 100, clientY: 300 });
+
+    expect(within(gallery).getByText("2 of 3")).toBeInTheDocument();
+  });
+
+  it("swiping right past the threshold at 1x zoom navigates to the previous snapshot", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second"), snapshot("third")]);
+    renderCodeBlock();
+    fireEvent.click(await screen.findByRole("button", { name: "Open 3 code snapshots" }));
+    const gallery = screen.getByRole("dialog", { name: "Code snapshot gallery" });
+    fireEvent.click(within(gallery).getByRole("button", { name: "Open snapshot 2 of 3" }));
+    const viewport = setupSwipeViewport();
+
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 60, clientY: 300 });
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 220, clientY: 300 });
+    fireEvent.pointerUp(viewport, { pointerId: 1, clientX: 220, clientY: 300 });
+
+    expect(within(gallery).getByText("1 of 3")).toBeInTheDocument();
+  });
+
+  it("a small drag below the swipe threshold does not change the index", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second"), snapshot("third")]);
+    renderCodeBlock();
+    fireEvent.click(await screen.findByRole("button", { name: "Open 3 code snapshots" }));
+    const gallery = screen.getByRole("dialog", { name: "Code snapshot gallery" });
+    fireEvent.click(within(gallery).getByRole("button", { name: "Open snapshot 2 of 3" }));
+    const viewport = setupSwipeViewport();
+
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 150, clientY: 300 });
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 130, clientY: 300 });
+    fireEvent.pointerUp(viewport, { pointerId: 1, clientX: 130, clientY: 300 });
+
+    expect(within(gallery).getByText("2 of 3")).toBeInTheDocument();
+  });
+
+  it("pinch-zooming (two pointers) does not trigger navigation", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second"), snapshot("third")]);
+    renderCodeBlock();
+    fireEvent.click(await screen.findByRole("button", { name: "Open 3 code snapshots" }));
+    const gallery = screen.getByRole("dialog", { name: "Code snapshot gallery" });
+    fireEvent.click(within(gallery).getByRole("button", { name: "Open snapshot 2 of 3" }));
+    const viewport = setupSwipeViewport();
+    const image = await screen.findByTestId("snapshot-viewer-image");
+    Object.defineProperties(image, {
+      naturalWidth: { configurable: true, value: 300 },
+      naturalHeight: { configurable: true, value: 600 },
+    });
+    fireEvent.load(image);
+
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 40, clientY: 300 });
+    fireEvent.pointerDown(viewport, { pointerId: 2, clientX: 260, clientY: 300 });
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 10, clientY: 300 });
+    fireEvent.pointerMove(viewport, { pointerId: 2, clientX: 290, clientY: 300 });
+    fireEvent.pointerUp(viewport, { pointerId: 1, clientX: 10, clientY: 300 });
+    fireEvent.pointerUp(viewport, { pointerId: 2, clientX: 290, clientY: 300 });
+
+    expect(within(gallery).getByText("2 of 3")).toBeInTheDocument();
+  });
+
+  it("swiping while zoomed in pans the image instead of navigating", async () => {
+    installSnapshotApi([snapshot("first"), snapshot("second"), snapshot("third")]);
+    renderCodeBlock();
+    fireEvent.click(await screen.findByRole("button", { name: "Open 3 code snapshots" }));
+    const gallery = screen.getByRole("dialog", { name: "Code snapshot gallery" });
+    fireEvent.click(within(gallery).getByRole("button", { name: "Open snapshot 2 of 3" }));
+    const viewport = setupSwipeViewport();
+    const image = await screen.findByTestId("snapshot-viewer-image");
+    Object.defineProperties(image, {
+      naturalWidth: { configurable: true, value: 300 },
+      naturalHeight: { configurable: true, value: 600 },
+    });
+    fireEvent.load(image);
+
+    // Pinch-zoom to 2x, then release both pointers.
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 40, clientY: 300 });
+    fireEvent.pointerDown(viewport, { pointerId: 2, clientX: 120, clientY: 300 });
+    fireEvent.pointerMove(viewport, { pointerId: 2, clientX: 200, clientY: 300 });
+    expect(viewport).toHaveAttribute("data-zoom", "2.000");
+    fireEvent.pointerUp(viewport, { pointerId: 2, clientX: 200, clientY: 300 });
+    fireEvent.pointerUp(viewport, { pointerId: 1, clientX: 40, clientY: 300 });
+
+    // Now a single-pointer horizontal drag well past the swipe threshold.
+    fireEvent.pointerDown(viewport, { pointerId: 3, clientX: 250, clientY: 300 });
+    fireEvent.pointerMove(viewport, { pointerId: 3, clientX: 100, clientY: 300 });
+    fireEvent.pointerUp(viewport, { pointerId: 3, clientX: 100, clientY: 300 });
+
+    expect(within(gallery).getByText("2 of 3")).toBeInTheDocument();
+    expect(viewport).toHaveAttribute("data-zoom", "2.000");
+  });
+
   it("opens the viewer directly for a code block's own snapshots, without the grid", async () => {
     installSnapshotApi([snapshot("first"), snapshot("second")]);
     renderCodeBlock();

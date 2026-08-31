@@ -5,6 +5,7 @@ import {
   CameraIcon,
   CheckIcon,
   ChevronLeftIcon,
+  ChevronRightIcon,
   ImagesIcon,
   Loader2Icon,
   Trash2Icon,
@@ -568,12 +569,12 @@ function SnapshotViewer({
   );
 
   const changeIndex = useCallback(
-    (next: number) => {
+    (next: number, animate = false) => {
       if (next < 0 || next >= snapshots.length) return;
       imageSizeRef.current = { width: 0, height: 0 };
       viewRef.current = { zoom: SNAPSHOT_MIN_ZOOM, offset: { x: 0, y: 0 } };
       setView(viewRef.current);
-      setAnimateTransform(false);
+      setAnimateTransform(animate);
       onIndexChange(next);
     },
     [onIndexChange, snapshots.length],
@@ -747,7 +748,7 @@ function SnapshotViewer({
               Math.abs(dx) > 55 &&
               Math.abs(dx) > Math.abs(dy) * 1.25
             ) {
-              changeIndex(index + (dx < 0 ? 1 : -1));
+              changeIndex(index + (dx < 0 ? 1 : -1), true);
             } else if (Math.hypot(dx, dy) < 8) {
               handleTap(end);
             }
@@ -828,17 +829,27 @@ function SnapshotViewer({
       <button
         type="button"
         aria-label="Previous snapshot"
-        className="sr-only"
         disabled={index === 0}
-        onClick={() => changeIndex(index - 1)}
-      />
+        onClick={() => changeIndex(index - 1, true)}
+        className={cn(
+          "absolute top-1/2 left-2 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white transition-opacity disabled:opacity-30",
+          chromeVisible ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+      >
+        <ChevronLeftIcon className="size-5" />
+      </button>
       <button
         type="button"
         aria-label="Next snapshot"
-        className="sr-only"
         disabled={index === snapshots.length - 1}
-        onClick={() => changeIndex(index + 1)}
-      />
+        onClick={() => changeIndex(index + 1, true)}
+        className={cn(
+          "absolute top-1/2 right-2 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white transition-opacity disabled:opacity-30",
+          chromeVisible ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+      >
+        <ChevronRightIcon className="size-5" />
+      </button>
     </div>
   );
 }
