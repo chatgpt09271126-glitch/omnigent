@@ -26,6 +26,7 @@ def _to_entity(row: SqlCodeSnapshot) -> CodeSnapshot:
         language=row.language,
         created_by=row.created_by,
         created_at=row.created_at,
+        page_index=row.page_index,
         capture_type=decode_code_snapshot_capture_type(row.capture_type),  # type: ignore[arg-type]
         artifact_key=row.artifact_key,
         content_type=row.content_type,
@@ -57,6 +58,7 @@ class SqlAlchemyCodeSnapshotStore(CodeSnapshotStore):
         artifact_key: str,
         content_type: str,
         bytes: int,
+        page_index: int = 0,
     ) -> CodeSnapshot:
         row = SqlCodeSnapshot(
             id=uuid.uuid4().hex,
@@ -67,6 +69,7 @@ class SqlAlchemyCodeSnapshotStore(CodeSnapshotStore):
             language=language,
             created_by=created_by,
             created_at=now_epoch(),
+            page_index=page_index,
             capture_type=encode_code_snapshot_capture_type(capture_type),
             artifact_key=artifact_key,
             content_type=content_type,
@@ -100,7 +103,7 @@ class SqlAlchemyCodeSnapshotStore(CodeSnapshotStore):
                 SqlCodeSnapshot.item_id == item_id,
                 SqlCodeSnapshot.code_block_start_offset == code_block_start_offset,
             )
-            .order_by(SqlCodeSnapshot.created_at, SqlCodeSnapshot.id)
+            .order_by(SqlCodeSnapshot.page_index, SqlCodeSnapshot.created_at, SqlCodeSnapshot.id)
         )
         with self._session("list_block_snapshots") as session:
             return [_to_entity(row) for row in session.execute(stmt).scalars().all()]

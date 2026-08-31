@@ -25,6 +25,7 @@ class CodeSnapshotStore(ABC):
         artifact_key: str,
         content_type: str,
         bytes: int,
+        page_index: int = 0,
     ) -> CodeSnapshot:
         """Persist and return one snapshot metadata row."""
         ...

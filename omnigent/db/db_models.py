@@ -1189,6 +1189,7 @@ class SqlCodeSnapshot(OmnigentBase):
     language: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[int] = mapped_column(Integer)
+    page_index: Mapped[int] = mapped_column(Integer, server_default="0")
     capture_type: Mapped[int] = mapped_column(SmallInteger)
     artifact_key: Mapped[str] = mapped_column(String(512), unique=True)
     content_type: Mapped[str] = mapped_column(String(64))

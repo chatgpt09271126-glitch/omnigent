@@ -211,6 +211,7 @@ async def generate_auto_code_cards(
                             artifact_key=artifact_key,
                             content_type="image/png",
                             bytes=len(png_bytes),
+                            page_index=page.page_index,
                         )
                     except Exception:
                         await asyncio.to_thread(artifact_store.delete, artifact_key)

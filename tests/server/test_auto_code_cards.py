@@ -239,6 +239,9 @@ async def test_generate_auto_code_cards_stores_one_snapshot_per_page(monkeypatch
         assert call["content_type"] == "image/png"
         assert call["artifact_key"] in artifact_store.puts
         assert call["bytes"] == len(artifact_store.puts[call["artifact_key"]])
+    # Each stored page must carry its own page_index so retrieval can order
+    # pages correctly even when their created_at timestamps tie.
+    assert [call["page_index"] for call in snapshot_store.added] == [0, 1, 2]
 
 
 @pytest.mark.asyncio

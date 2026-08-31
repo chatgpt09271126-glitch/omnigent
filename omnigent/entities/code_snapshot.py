@@ -26,6 +26,7 @@ class CodeSnapshot:
     language: str | None
     created_by: str | None
     created_at: int
+    page_index: int
     capture_type: SnapshotCaptureType
     artifact_key: str
     content_type: str
