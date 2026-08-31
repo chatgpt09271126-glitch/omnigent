@@ -15,6 +15,7 @@ _check-uv:
 
 _ensure-uv:
     uv sync --extra all --group dev
+    uv run playwright install --with-deps chromium
 
 # --- iOS Ruby dependencies ---
 

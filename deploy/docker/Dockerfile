@@ -380,6 +380,12 @@ COPY --from=server-builder /opt/venv /opt/venv
 COPY --from=server-builder /build /build
 COPY deploy/docker/entrypoint.py /app/entrypoint.py
 
+# Auto code cards (omnigent/server/code_card_rendering.py) rasterize via a
+# real headless browser at runtime. --with-deps also installs the OS
+# libraries Chromium needs, since this stage doesn't inherit them from
+# server-builder.
+RUN playwright install --with-deps chromium
+
 WORKDIR /app
 
 # /data is mounted as a persistent volume by docker-compose for the
