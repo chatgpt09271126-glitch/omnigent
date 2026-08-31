@@ -1186,6 +1186,8 @@ def create_app(
         _uninstall_subagent_block_notifier = configure_subagent_block_notifier(
             conversation_store,
             runner_router,
+            code_snapshot_store=code_snapshot_store,
+            artifact_store=artifact_store,
         )
 
         from omnigent.runner.resource_registry import (

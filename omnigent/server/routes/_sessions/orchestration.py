@@ -6946,6 +6946,8 @@ async def _wake_parent_for_blocked_child(
     *,
     conversation_store: ConversationStore,
     runner_router: RunnerRouter | None,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> bool:
     """
     Deliver a parent-wake notice when a sub-agent blocks on an approval.
@@ -6998,6 +7000,8 @@ async def _wake_parent_for_blocked_child(
         parent_conv.runner_id,
         runner_client,
         conversation_store,
+        code_snapshot_store=code_snapshot_store,
+        artifact_store=artifact_store,
     )
     body = SessionEventInput(
         type="message",
@@ -7034,6 +7038,9 @@ async def _wake_parent_for_blocked_child(
 def configure_subagent_block_notifier(
     conversation_store: ConversationStore,
     runner_router: RunnerRouter | None,
+    *,
+    code_snapshot_store: CodeSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> Callable[[], None]:
     """
     Install the parent-wake notifier on the elicitation publish path.
@@ -7077,6 +7084,8 @@ def configure_subagent_block_notifier(
             notice,
             conversation_store=conversation_store,
             runner_router=runner_router,
+            code_snapshot_store=code_snapshot_store,
+            artifact_store=artifact_store,
         )
 
     notifier = SubagentBlockNotifier(
@@ -7846,6 +7855,7 @@ async def _create_session_from_existing_agent(
     permission_store: PermissionStore | None = None,
     liveness_lookup: Callable[[list[str]], dict[str, SessionLiveness]] | None = None,
     file_store: FileStore | None = None,
+    code_snapshot_store: CodeSnapshotStore | None = None,
     artifact_store: ArtifactStore | None = None,
     background_title_coordinator: BackgroundSessionTitleCoordinator | None = None,
 ) -> SessionResponse:
@@ -7877,6 +7887,9 @@ async def _create_session_from_existing_agent(
         ``file_id`` references in ``initial_items`` before forwarding
         to the runner.
     :param artifact_store: Optional binary content store for the same.
+    :param code_snapshot_store: Store for auto-generated code-card
+        snapshots, forwarded to the relay started for ``initial_items``
+        dispatch. ``None`` disables auto code card generation.
     :returns: The newly created session snapshot.
     :raises OmnigentError: 404 if no agent matches ``body.agent_id``;
         403/404 if ``parent_session_id`` or session-scoped ``agent_id``
@@ -8530,6 +8543,8 @@ async def _create_session_from_existing_agent(
                 conv.runner_id,
                 runner_client,
                 conversation_store,
+                code_snapshot_store=code_snapshot_store,
+                artifact_store=artifact_store,
             )
             # Dispatch (not a plain forward) so native-terminal sessions take the
             # single-writer bypass — otherwise the forwarder's echo duplicates the kickoff.

@@ -894,6 +894,7 @@ def create_sessions_router(
         agent_store=agent_store,
         file_store=file_store,
         artifact_store=artifact_store,
+        code_snapshot_store=code_snapshot_store,
         runner_router=runner_router,
         auth_provider=auth_provider,
         permission_store=permission_store,

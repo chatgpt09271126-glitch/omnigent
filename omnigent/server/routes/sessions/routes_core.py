@@ -184,6 +184,7 @@ from omnigent.session_lifecycle import (
 )
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.artifact_store import ArtifactStore
+from omnigent.stores.code_snapshot_store import CodeSnapshotStore
 from omnigent.stores.comment_store import CommentStore
 from omnigent.stores.conversation_store import (
     PINNED_LABEL_KEY,
@@ -203,6 +204,7 @@ def register_core_routes(
     agent_store: AgentStore,
     file_store: FileStore | None = None,
     artifact_store: ArtifactStore | None = None,
+    code_snapshot_store: CodeSnapshotStore | None = None,
     runner_router: RunnerRouter | None = None,
     auth_provider: AuthProvider | None = None,
     permission_store: PermissionStore | None = None,
@@ -303,6 +305,7 @@ def register_core_routes(
             permission_store=permission_store,
             liveness_lookup=liveness_lookup,
             file_store=file_store,
+            code_snapshot_store=code_snapshot_store,
             artifact_store=artifact_store,
             background_title_coordinator=background_title_coordinator,
         )
@@ -1790,6 +1793,8 @@ def register_core_routes(
                     runner_id,
                     _runner_client,
                     conversation_store,
+                    code_snapshot_store=code_snapshot_store,
+                    artifact_store=artifact_store,
                 )
         else:
             conv = conv_for_collaboration_mode

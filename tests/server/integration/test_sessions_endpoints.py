@@ -146,6 +146,59 @@ async def test_create_session_without_title_returns_none(
     assert session["title"] is None
 
 
+async def test_create_session_with_initial_items_threads_auto_code_card_stores(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ``POST /v1/sessions`` with ``initial_items`` and a bound runner forwards
+    ``code_snapshot_store``/``artifact_store`` to the relay it starts.
+
+    Regression test for the create-path that reuses a bound runner's relay
+    handle (``_ensure_runner_relay`` is a no-op for an already-live relay on
+    the same runner): if this call site ever drops the store kwargs while
+    it happens to run first for a session, auto code card generation is
+    silently disabled for that relay for its entire lifetime.
+    """
+    from omnigent.server.routes import sessions as sessions_module
+
+    fake_runner = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(202, json={"queued": True})),
+        base_url="http://runner",
+    )
+
+    async def _fake_get_runner_client(
+        _session_id: str,
+        _runner_router: object,
+    ) -> httpx.AsyncClient:
+        return fake_runner
+
+    calls: list[dict[str, Any]] = []
+    real_ensure_runner_relay_ready = sessions_module._ensure_runner_relay_ready
+
+    async def _spy_ensure_runner_relay_ready(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return await real_ensure_runner_relay_ready(*args, **kwargs)
+
+    monkeypatch.setattr(sessions_module, "_get_runner_client", _fake_get_runner_client)
+    monkeypatch.setattr(
+        sessions_module, "_ensure_runner_relay_ready", _spy_ensure_runner_relay_ready
+    )
+
+    try:
+        agent = await create_test_agent(client)
+        await _create_session(client, agent["id"], initial_message="hello there")
+    finally:
+        await fake_runner.aclose()
+
+    assert calls, "expected _ensure_runner_relay_ready to be invoked for the bound runner"
+    assert "code_snapshot_store" in calls[0]
+    assert "artifact_store" in calls[0]
+    # The test app wires a real artifact store (conftest LocalArtifactStore);
+    # a dropped kwarg here would silently regress to None and this would fail.
+    assert calls[0]["artifact_store"] is not None
+
+
 async def test_first_message_schedules_background_semantic_title(
     client: httpx.AsyncClient,
     app: Any,
@@ -3623,7 +3676,10 @@ async def test_patch_runner_rebind_clears_stale_failed_status(
         _session_id: str,
         _runner_id: str,
         _runner_client: _RecoveringRunnerClient,
-        _conversation_store: Any,
+        _conversation_store: Any = None,
+        *,
+        code_snapshot_store: Any = None,
+        artifact_store: Any = None,
     ) -> None:
         """
         Skip relay startup; this test targets the PATCH init branch.
@@ -3632,6 +3688,8 @@ async def test_patch_runner_rebind_clears_stale_failed_status(
         :param _runner_id: Runner id, e.g. ``"runner_recovered"``.
         :param _runner_client: Runner client stub.
         :param _conversation_store: Conversation store from the route.
+        :param code_snapshot_store: Ignored; accepted for call-site parity.
+        :param artifact_store: Ignored; accepted for call-site parity.
         :returns: None.
         """
 
