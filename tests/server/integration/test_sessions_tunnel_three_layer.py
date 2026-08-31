@@ -1091,7 +1091,7 @@ async def _reconnect_fires_connect_hook(
 
     real_ensure = sessions_routes._ensure_runner_relay
 
-    def _stub_ensure(sid, rid, client, store=None):  # type: ignore[no-untyped-def]
+    def _stub_ensure(sid, rid, client, store=None, *, code_snapshot_store=None, artifact_store=None):  # type: ignore[no-untyped-def]
         return None
 
     sessions_routes._ensure_runner_relay = _stub_ensure  # type: ignore[assignment]
@@ -1359,7 +1359,7 @@ def _stub_connect_hook_for_pumpless_ws(ap_app: FastAPI, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(router, "client_for_session_resources", _stub_resolver)
 
-    def _stub_ensure(sid, rid, client, store=None):  # type: ignore[no-untyped-def]
+    def _stub_ensure(sid, rid, client, store=None, *, code_snapshot_store=None, artifact_store=None):  # type: ignore[no-untyped-def]
         return None
 
     monkeypatch.setattr(sessions_module, "_ensure_runner_relay", _stub_ensure)
