@@ -1,6 +1,14 @@
 """Tests for auto_code_cards module: fenced code block detection and pagination."""
 
-from omnigent.server.auto_code_cards import find_code_blocks
+import logging
+
+import pytest
+
+from omnigent.server.auto_code_cards import (
+    MAX_AUTO_CODE_CARD_PAGES,
+    find_code_blocks,
+    generate_auto_code_cards,
+)
 
 
 def test_find_code_blocks_returns_language_and_offset():
@@ -30,10 +38,48 @@ def test_find_code_blocks_ignores_unterminated_fence():
     assert find_code_blocks(text) == []
 
 
+def test_find_code_blocks_outer_fence_wraps_inner_example_block():
+    # A 4-backtick fence wrapping markdown text that itself shows a 3-backtick
+    # example. Only the outer block should be extracted; the inner ```
+    # sequence must not be mistaken for the closing fence.
+    text = (
+        "Here's how to write a code block:\n\n"
+        "````markdown\n"
+        "```python\n"
+        "print('hi')\n"
+        "```\n"
+        "````\n\n"
+        "Done."
+    )
+    blocks = find_code_blocks(text)
+    assert len(blocks) == 1
+    block = blocks[0]
+    assert block.language == "markdown"
+    assert block.lines == ["```python", "print('hi')", "```"]
+    assert text[block.start_offset : block.start_offset + 4] == "````"
+
+
+def test_find_code_blocks_detects_indented_fence_with_correct_offset():
+    # Up to 3 leading spaces before the fence is a valid CommonMark fence.
+    # The offset must point at the start of the indentation (matching
+    # mdast's node.position.start.offset), not at the backticks themselves.
+    text = "Note:\n\n   ```python\n   print('hi')\n   ```\n\nDone."
+    blocks = find_code_blocks(text)
+    assert len(blocks) == 1
+    block = blocks[0]
+    assert block.language == "python"
+    fence_line_start = text.index("```python") - 3
+    assert block.start_offset == fence_line_start
+    assert text[block.start_offset : block.start_offset + 3] == "   "
+    assert text[block.start_offset + 3 : block.start_offset + 6] == "```"
+
+
 def test_paginate_short_block_returns_single_page():
     from omnigent.server.auto_code_cards import DetectedCodeBlock, paginate_code_block
 
-    block = DetectedCodeBlock(language="python", start_offset=0, lines=[f"line {i}" for i in range(10)])
+    block = DetectedCodeBlock(
+        language="python", start_offset=0, lines=[f"line {i}" for i in range(10)]
+    )
     pages = paginate_code_block(block)
     assert len(pages) == 1
     assert pages[0].page_index == 0
@@ -43,7 +89,6 @@ def test_paginate_short_block_returns_single_page():
 
 def test_paginate_long_block_overlaps_by_three_lines():
     from omnigent.server.auto_code_cards import (
-        CODE_CARD_PAGE_OVERLAP,
         CODE_CARD_PAGE_SIZE,
         DetectedCodeBlock,
         paginate_code_block,
@@ -95,11 +140,6 @@ def test_paginate_every_page_has_exact_size_when_total_exceeds_size():
         )
 
 
-import pytest
-
-from omnigent.server.auto_code_cards import generate_auto_code_cards
-
-
 class _FakeArtifactStore:
     def __init__(self):
         self.puts: dict[str, bytes] = {}
@@ -122,12 +162,59 @@ class _FakeSnapshotStore:
         return kwargs
 
 
+class _FakeBrowser:
+    def __init__(self):
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+class _FakeChromium:
+    """Spies on how many times a browser is launched, so tests can assert
+    one launch handles many pages instead of one launch per page."""
+
+    def __init__(self, *, fail_with: Exception | None = None):
+        self.launch_calls = 0
+        self._fail_with = fail_with
+        self.launched_browsers: list[_FakeBrowser] = []
+
+    async def launch(self):
+        self.launch_calls += 1
+        if self._fail_with is not None:
+            raise self._fail_with
+        browser = _FakeBrowser()
+        self.launched_browsers.append(browser)
+        return browser
+
+
+class _FakePlaywright:
+    def __init__(self, chromium):
+        self.chromium = chromium
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+def _fake_async_playwright(chromium):
+    def factory():
+        return _FakePlaywright(chromium)
+
+    return factory
+
+
 @pytest.mark.asyncio
 async def test_generate_auto_code_cards_stores_one_snapshot_per_page(monkeypatch):
-    async def fake_render(page):
+    async def fake_render(page, browser):
         return b"\x89PNG\r\n\x1a\nfake"
 
     monkeypatch.setattr("omnigent.server.code_card_rendering.render_code_card_png", fake_render)
+    monkeypatch.setattr(
+        "omnigent.server.auto_code_cards.async_playwright", _fake_async_playwright(_FakeChromium())
+    )
 
     artifact_store = _FakeArtifactStore()
     snapshot_store = _FakeSnapshotStore()
@@ -177,13 +264,16 @@ async def test_generate_auto_code_cards_isolates_one_page_failure(monkeypatch):
     """A render failure on one page must not abort the other pages."""
     call_count = {"n": 0}
 
-    async def flaky_render(page):
+    async def flaky_render(page, browser):
         call_count["n"] += 1
         if call_count["n"] == 2:
             raise RuntimeError("boom: simulated render failure")
         return b"\x89PNG\r\n\x1a\nfake"
 
     monkeypatch.setattr("omnigent.server.code_card_rendering.render_code_card_png", flaky_render)
+    monkeypatch.setattr(
+        "omnigent.server.auto_code_cards.async_playwright", _fake_async_playwright(_FakeChromium())
+    )
 
     artifact_store = _FakeArtifactStore()
     snapshot_store = _FakeSnapshotStore()
@@ -207,10 +297,13 @@ async def test_generate_auto_code_cards_isolates_one_page_failure(monkeypatch):
 async def test_generate_auto_code_cards_isolates_one_page_store_failure(monkeypatch):
     """A snapshot_store.add failure on one page must not abort the other pages."""
 
-    async def fake_render(page):
+    async def fake_render(page, browser):
         return b"\x89PNG\r\n\x1a\nfake"
 
     monkeypatch.setattr("omnigent.server.code_card_rendering.render_code_card_png", fake_render)
+    monkeypatch.setattr(
+        "omnigent.server.auto_code_cards.async_playwright", _fake_async_playwright(_FakeChromium())
+    )
 
     artifact_store = _FakeArtifactStore()
 
@@ -245,3 +338,126 @@ async def test_generate_auto_code_cards_isolates_one_page_store_failure(monkeypa
     assert artifact_store.deleted[0] not in artifact_store.puts
     persisted_keys = {call["artifact_key"] for call in snapshot_store.added}
     assert artifact_store.deleted[0] not in persisted_keys
+
+
+@pytest.mark.asyncio
+async def test_generate_auto_code_cards_launches_one_browser_for_all_pages(monkeypatch):
+    """Rendering multiple pages from one message must launch Chromium once,
+    not once per page."""
+    render_calls: list[object] = []
+
+    async def fake_render(page, browser):
+        render_calls.append(browser)
+        return b"\x89PNG\r\n\x1a\nfake"
+
+    monkeypatch.setattr("omnigent.server.code_card_rendering.render_code_card_png", fake_render)
+    chromium = _FakeChromium()
+    monkeypatch.setattr(
+        "omnigent.server.auto_code_cards.async_playwright", _fake_async_playwright(chromium)
+    )
+
+    artifact_store = _FakeArtifactStore()
+    snapshot_store = _FakeSnapshotStore()
+    text = "answer:\n\n```python\n" + "\n".join(f"line {i}" for i in range(45)) + "\n```\n"
+
+    await generate_auto_code_cards(
+        text=text,
+        conversation_id="conv-1",
+        response_id="resp-1",
+        item_id="item-1",
+        snapshot_store=snapshot_store,
+        artifact_store=artifact_store,
+    )
+
+    # 3 pages rendered, but only one Chromium launch for all of them.
+    assert len(render_calls) == 3
+    assert chromium.launch_calls == 1
+    assert len({id(b) for b in render_calls}) == 1
+    assert chromium.launched_browsers[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_generate_auto_code_cards_caps_total_pages(monkeypatch):
+    """A message with far more pages than the cap only renders up to the cap."""
+    render_calls: list[object] = []
+
+    async def fake_render(page, browser):
+        render_calls.append(page)
+        return b"\x89PNG\r\n\x1a\nfake"
+
+    monkeypatch.setattr("omnigent.server.code_card_rendering.render_code_card_png", fake_render)
+    chromium = _FakeChromium()
+    monkeypatch.setattr(
+        "omnigent.server.auto_code_cards.async_playwright", _fake_async_playwright(chromium)
+    )
+
+    artifact_store = _FakeArtifactStore()
+    snapshot_store = _FakeSnapshotStore()
+    # 10 blocks x 3 pages each (45 lines / page size 20 w/ overlap) = 30 pages,
+    # well above MAX_AUTO_CODE_CARD_PAGES.
+    text = "\n\n".join(
+        "```python\n" + "\n".join(f"line {i}" for i in range(45)) + "\n```" for _ in range(10)
+    )
+
+    await generate_auto_code_cards(
+        text=text,
+        conversation_id="conv-1",
+        response_id="resp-1",
+        item_id="item-1",
+        snapshot_store=snapshot_store,
+        artifact_store=artifact_store,
+    )
+
+    assert len(render_calls) == MAX_AUTO_CODE_CARD_PAGES
+    assert len(snapshot_store.added) == MAX_AUTO_CODE_CARD_PAGES
+    # Still only one browser launch even though pages were capped.
+    assert chromium.launch_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_auto_code_cards_logs_missing_browser_binary_once_as_warning(
+    monkeypatch, caplog
+):
+    """A missing Chromium binary must be logged once as a plain warning (no
+    per-page traceback spam), and generation must degrade silently."""
+    import omnigent.server.code_card_rendering as code_card_rendering
+
+    monkeypatch.setattr(code_card_rendering, "_missing_browser_binary_warned", False)
+
+    launch_error = RuntimeError(
+        "BrowserType.launch: Executable doesn't exist at /fake/chromium\n"
+        "Please run the following command to download new browsers:\n"
+        "    playwright install\n"
+    )
+    monkeypatch.setattr(
+        "omnigent.server.auto_code_cards.async_playwright",
+        _fake_async_playwright(_FakeChromium(fail_with=launch_error)),
+    )
+
+    artifact_store = _FakeArtifactStore()
+    snapshot_store = _FakeSnapshotStore()
+    text = "```python\nprint(1)\n```"
+
+    with caplog.at_level(logging.WARNING):
+        await generate_auto_code_cards(
+            text=text,
+            conversation_id="conv-1",
+            response_id="resp-1",
+            item_id="item-1",
+            snapshot_store=snapshot_store,
+            artifact_store=artifact_store,
+        )
+        await generate_auto_code_cards(
+            text=text,
+            conversation_id="conv-1",
+            response_id="resp-2",
+            item_id="item-1",
+            snapshot_store=snapshot_store,
+            artifact_store=artifact_store,
+        )
+
+    assert snapshot_store.added == []
+    assert artifact_store.puts == {}
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warning_records) == 1
+    assert warning_records[0].exc_info is None

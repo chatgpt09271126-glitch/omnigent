@@ -6,10 +6,24 @@ desktop code screenshot.
 from __future__ import annotations
 
 import html
-
-from playwright.async_api import async_playwright
+import logging
+from typing import TYPE_CHECKING
 
 from omnigent.server.auto_code_cards import CodeCardPage
+
+if TYPE_CHECKING:
+    from playwright.async_api import Browser
+
+_logger = logging.getLogger(__name__)
+
+# Playwright raises a plain playwright.async_api.Error (no dedicated subclass)
+# when the Chromium binary hasn't been installed via `playwright install`.
+# We match on message text and log it once per process instead of once per
+# page, to keep auto code card rendering's silent best-effort degradation
+# promise without spamming logs.
+_MISSING_BROWSER_BINARY_MARKERS = ("Executable doesn't exist", "playwright install")
+
+_missing_browser_binary_warned = False
 
 _CARD_WIDTH_PX = 900
 _LINE_HEIGHT_PX = 28
@@ -59,14 +73,37 @@ def _render_html(page: CodeCardPage) -> tuple[str, int]:
     )
 
 
-async def render_code_card_png(page: CodeCardPage) -> bytes:
-    """Render one code card page to PNG bytes using a headless browser."""
+def is_missing_browser_binary_error(exc: BaseException) -> bool:
+    """True if ``exc`` is Playwright's error for an uninstalled browser binary."""
+    message = str(exc)
+    return any(marker in message for marker in _MISSING_BROWSER_BINARY_MARKERS)
+
+
+def warn_missing_browser_binary_once(exc: BaseException) -> None:
+    """Log the missing-browser-binary condition once per process, as a warning
+    (not a full traceback), so repeated messages don't spam the logs while a
+    deploy is missing its Playwright browser install.
+    """
+    global _missing_browser_binary_warned
+    if _missing_browser_binary_warned:
+        return
+    _missing_browser_binary_warned = True
+    _logger.warning(
+        "Playwright's Chromium binary is not installed; skipping auto code "
+        "card rendering until `playwright install chromium` is run. %s",
+        exc,
+    )
+
+
+async def render_code_card_png(page: CodeCardPage, browser: Browser) -> bytes:
+    """Render one code card page to PNG bytes using an already-launched
+    browser. The caller owns the browser's launch/close lifecycle so many
+    pages from the same message can share a single Chromium process.
+    """
     html_content, height = _render_html(page)
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch()
-        try:
-            browser_page = await browser.new_page(viewport={"width": _CARD_WIDTH_PX, "height": height})
-            await browser_page.set_content(html_content)
-            return await browser_page.screenshot(type="png", full_page=True)
-        finally:
-            await browser.close()
+    browser_page = await browser.new_page(viewport={"width": _CARD_WIDTH_PX, "height": height})
+    try:
+        await browser_page.set_content(html_content)
+        return await browser_page.screenshot(type="png", full_page=True)
+    finally:
+        await browser_page.close()
