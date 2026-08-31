@@ -632,12 +632,15 @@ describe("code snapshots", () => {
     fireEvent.pointerUp(viewport, { pointerId: 1, clientX: 40, clientY: 300 });
 
     // Now a single-pointer horizontal drag well past the swipe threshold.
+    const offsetXBeforeDrag = viewport.getAttribute("data-offset-x");
     fireEvent.pointerDown(viewport, { pointerId: 3, clientX: 250, clientY: 300 });
     fireEvent.pointerMove(viewport, { pointerId: 3, clientX: 100, clientY: 300 });
     fireEvent.pointerUp(viewport, { pointerId: 3, clientX: 100, clientY: 300 });
 
     expect(within(gallery).getByText("2 of 3")).toBeInTheDocument();
     expect(viewport).toHaveAttribute("data-zoom", "2.000");
+    // The pan actually moved the image, rather than the drag being a no-op.
+    expect(viewport.getAttribute("data-offset-x")).not.toBe(offsetXBeforeDrag);
   });
 
   it("opens the viewer directly for a code block's own snapshots, without the grid", async () => {
