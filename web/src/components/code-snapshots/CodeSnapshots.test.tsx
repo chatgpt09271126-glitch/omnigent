@@ -522,6 +522,29 @@ describe("code snapshots", () => {
     expect(screen.getByText("1 of 2")).toBeInTheDocument();
   });
 
+  it("shows a pending indicator until auto cards arrive, then becomes tappable", async () => {
+    const { stored } = installSnapshotApi([]);
+    renderCodeBlock();
+
+    await screen.findByTestId("auto-card-pending-indicator");
+    const codeBody = document.querySelector('[data-streamdown="code-block-body"]');
+    expect(codeBody).not.toBeNull();
+
+    fireEvent.pointerDown(codeBody!, { clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(codeBody!, { clientX: 50, clientY: 50 });
+    expect(screen.queryByTestId("snapshot-viewer")).toBeNull();
+
+    stored.push(snapshot("first"));
+
+    await waitFor(() => expect(screen.queryByTestId("auto-card-pending-indicator")).toBeNull(), {
+      timeout: 5000,
+    });
+
+    fireEvent.pointerDown(codeBody!, { clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(codeBody!, { clientX: 50, clientY: 50 });
+    expect(await screen.findByTestId("snapshot-viewer")).toBeVisible();
+  }, 10000);
+
   it("does not open the viewer on a click-and-drag gesture used to select text", async () => {
     installSnapshotApi([snapshot("first"), snapshot("second")]);
     renderCodeBlock();

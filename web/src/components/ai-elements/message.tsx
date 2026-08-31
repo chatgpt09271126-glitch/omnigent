@@ -4,10 +4,22 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
-import type { CodeSnapshotOrigin } from "@/lib/codeSnapshotsApi";
+import {
+  codeSnapshotsQueryKey,
+  fetchCodeSnapshots,
+  type CodeSnapshotOrigin,
+} from "@/lib/codeSnapshotsApi";
 import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
 import type { UIMessage } from "ai";
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, WrapTextIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  Loader2Icon,
+  WrapTextIcon,
+} from "lucide-react";
 import type {
   ComponentProps,
   ComponentType,
@@ -514,8 +526,46 @@ function ChatCodeBlockWrapToggle({ wrap, onToggle }: { wrap: boolean; onToggle: 
 // point rather than a drag gesture.
 const TAP_DRAG_THRESHOLD_PX = 4;
 
+// Auto-generated cards land ~1-3s after the message finishes streaming (Task
+// 5), with no push notification when they're ready. Short-poll a bounded
+// number of times so the tap target activates on its own once cards exist,
+// without polling forever if generation never produces anything (no fenced
+// code, or a best-effort failure).
+const AUTO_CARD_POLL_INTERVAL_MS = 1500;
+const AUTO_CARD_POLL_MAX_ATTEMPTS = 5;
+
+// Reuses the same query (and cache entry) that CodeSnapshotBlockProvider
+// already reads via useCodeSnapshotBlock(), just with a short refetchInterval
+// scoped to this observer. Once snapshots arrive (or attempts run out) this
+// observer stops polling; other consumers of the same query (the manual
+// gallery) are unaffected since their own observers never set an interval.
+function useAutoCardPending(origin: CodeSnapshotOrigin, hasSnapshots: boolean): boolean {
+  const [attempts, setAttempts] = useState(0);
+  const stillWaiting = !hasSnapshots && attempts < AUTO_CARD_POLL_MAX_ATTEMPTS;
+
+  const query = useQuery({
+    queryKey: codeSnapshotsQueryKey(origin),
+    queryFn: () => fetchCodeSnapshots(origin),
+    enabled: stillWaiting,
+    refetchInterval: stillWaiting ? AUTO_CARD_POLL_INTERVAL_MS : false,
+  });
+
+  useEffect(() => {
+    if (!stillWaiting || query.dataUpdatedAt === 0) return;
+    setAttempts((a) => a + 1);
+  }, [query.dataUpdatedAt, stillWaiting]);
+
+  // Reset the attempt budget if the underlying block changes identity.
+  useEffect(() => {
+    setAttempts(0);
+  }, [origin.responseId, origin.itemId, origin.codeBlockStartOffset]);
+
+  return stillWaiting;
+}
+
 function ChatCodeBlockTapToOpen({ block }: { block: ReactNode }) {
-  const { snapshots } = useCodeSnapshotBlock();
+  const { snapshots, origin } = useCodeSnapshotBlock();
+  const pending = useAutoCardPending(origin, snapshots.length > 0);
   const [viewerOpen, setViewerOpen] = useState(false);
   const downPointRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -547,8 +597,18 @@ function ChatCodeBlockTapToOpen({ block }: { block: ReactNode }) {
 
   return (
     <>
-      <div onPointerDown={handlePointerDown} onPointerUp={handlePointerUp}>
+      <div className="relative" onPointerDown={handlePointerDown} onPointerUp={handlePointerUp}>
         {block}
+        {pending && (
+          <div
+            aria-label="Code cards are being generated"
+            className="absolute top-2 left-2 z-10 flex items-center justify-center rounded-full bg-sidebar/80 p-1.5 text-muted-foreground supports-[backdrop-filter]:bg-sidebar/70 supports-[backdrop-filter]:backdrop-blur"
+            data-testid="auto-card-pending-indicator"
+            role="status"
+          >
+            <Loader2Icon className="size-3.5 animate-spin" />
+          </div>
+        )}
       </div>
       <AutoCardViewer open={viewerOpen} onOpenChange={setViewerOpen} />
     </>
