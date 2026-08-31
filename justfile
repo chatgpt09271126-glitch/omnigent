@@ -15,7 +15,14 @@ _check-uv:
 
 _ensure-uv:
     uv sync --extra all --group dev
-    uv run playwright install --with-deps chromium
+
+# Browser binary for auto code card rendering (omnigent/server/code_card_rendering.py).
+# Installs only the Chromium binary, not OS-level deps (--with-deps shells out to
+# apt-get, which fails outright on non-Debian Linux and can prompt for sudo). A
+# contributor on a fresh machine may need to install Playwright's OS-level
+# dependencies for Chromium separately, once, per https://playwright.dev/docs/browsers.
+_ensure-playwright: _ensure-uv
+    uv run playwright install chromium
 
 # --- iOS Ruby dependencies ---
 
@@ -42,7 +49,7 @@ _ensure-omnidev:
 check: _check-uv _check-ios _check-omnidev
 
 [group('setup')]
-ensure: _ensure-uv _ensure-ios _ensure-omnidev
+ensure: _ensure-uv _ensure-playwright _ensure-ios _ensure-omnidev
 
 # --- Local dev ---
 

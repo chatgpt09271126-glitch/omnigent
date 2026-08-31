@@ -166,10 +166,30 @@ COPY --from=server-builder /build /build
 COPY deploy/docker/entrypoint.py /app/entrypoint.py
 
 # Auto code cards (omnigent/server/code_card_rendering.py) rasterize via a
-# real headless browser at runtime. --with-deps also installs the OS
-# libraries Chromium needs, since this stage doesn't inherit them from
-# server-builder.
-RUN playwright install --with-deps chromium
+# real headless browser at runtime. Use a fixed, non-home cache path so the
+# browser downloaded here (as root) is still resolvable once we switch to the
+# unprivileged runtime user below.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+# Chromium's OS-level deps, installed via dnf (this is UBI/RHEL, not
+# Debian/Ubuntu, so `playwright install --with-deps` — which shells out to
+# apt-get — is not usable here). Package list is the standard RHEL/Fedora
+# equivalent of Playwright's Debian dependency set; adjust if `playwright
+# install chromium` still reports missing shared libraries on this base image.
+RUN dnf install -y --nodocs \
+      nss nss-util nspr \
+      atk at-spi2-atk at-spi2-core \
+      cups-libs \
+      libdrm libxkbcommon \
+      mesa-libgbm \
+      alsa-lib \
+      pango cairo \
+      libXcomposite libXdamage libXfixes libXrandr libXScrnSaver \
+      libxshmfence \
+ && dnf clean all
+
+RUN playwright install chromium \
+ && chmod -R g=u /opt/ms-playwright
 
 WORKDIR /app
 
