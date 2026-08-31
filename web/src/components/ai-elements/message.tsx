@@ -337,7 +337,20 @@ export type MessageResponseProps = Omit<StreamdownProps, "rehypePlugins"> & {
    * Opt-in: only callers that supply that override may set it.
    */
   markFileLinks?: boolean;
-  codeSnapshotContext?: Omit<CodeSnapshotOrigin, "codeBlockStartOffset" | "language"> | null;
+  codeSnapshotContext?:
+    | (Omit<CodeSnapshotOrigin, "codeBlockStartOffset" | "language"> & {
+        /**
+         * Whether this message is recent enough (or is the latest assistant
+         * message) to justify showing an auto-card "generating" indicator
+         * and polling for it. Historical code blocks reached long after the
+         * message settled should never show a spinner that will never
+         * resolve. Defaults to `true` when omitted, so callers that don't
+         * plumb recency (e.g. tests) keep the prior always-eligible
+         * behavior.
+         */
+        pendingEligible?: boolean;
+      })
+    | null;
 };
 
 const CodeSnapshotRenderContext = createContext<MessageResponseProps["codeSnapshotContext"]>(null);
@@ -539,9 +552,13 @@ const AUTO_CARD_POLL_MAX_ATTEMPTS = 5;
 // scoped to this observer. Once snapshots arrive (or attempts run out) this
 // observer stops polling; other consumers of the same query (the manual
 // gallery) are unaffected since their own observers never set an interval.
-function useAutoCardPending(origin: CodeSnapshotOrigin, hasSnapshots: boolean): boolean {
+function useAutoCardPending(
+  origin: CodeSnapshotOrigin,
+  hasSnapshots: boolean,
+  pendingEligible: boolean,
+): boolean {
   const [attempts, setAttempts] = useState(0);
-  const stillWaiting = !hasSnapshots && attempts < AUTO_CARD_POLL_MAX_ATTEMPTS;
+  const stillWaiting = pendingEligible && !hasSnapshots && attempts < AUTO_CARD_POLL_MAX_ATTEMPTS;
 
   const query = useQuery({
     queryKey: codeSnapshotsQueryKey(origin),
@@ -569,7 +586,13 @@ function useAutoCardPending(origin: CodeSnapshotOrigin, hasSnapshots: boolean): 
 
 function ChatCodeBlockTapToOpen({ block }: { block: ReactNode }) {
   const { snapshots, origin } = useCodeSnapshotBlock();
-  const pending = useAutoCardPending(origin, snapshots.length > 0);
+  // Same context MessageResponse provides to ChatCodeBlockPre — this
+  // component renders as a descendant of that provider, so reading it here
+  // reuses the message's existing recency signal instead of threading a new
+  // prop down through the code-snapshot block plumbing.
+  const snapshotContext = useContext(CodeSnapshotRenderContext);
+  const pendingEligible = snapshotContext?.pendingEligible ?? true;
+  const pending = useAutoCardPending(origin, snapshots.length > 0, pendingEligible);
   const [viewerOpen, setViewerOpen] = useState(false);
   const downPointRef = useRef<{ x: number; y: number } | null>(null);
 

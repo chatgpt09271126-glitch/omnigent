@@ -121,9 +121,13 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
-function renderCodeBlock(canEdit = true, wrapper?: (children: ReactNode) => ReactNode) {
+function renderCodeBlock(
+  canEdit = true,
+  wrapper?: (children: ReactNode) => ReactNode,
+  pendingEligible?: boolean,
+) {
   const content = (
-    <MessageResponse codeSnapshotContext={{ ...ORIGIN, canEdit }}>
+    <MessageResponse codeSnapshotContext={{ ...ORIGIN, canEdit, pendingEligible }}>
       {"```ts\nconst answer = 42;\n```"}
     </MessageResponse>
   );
@@ -206,6 +210,61 @@ describe("code snapshots", () => {
     );
 
     expect(await screen.findByRole("button", { name: "Capture snapshot region" })).toBeVisible();
+  });
+
+  it("gates the auto-card pending indicator on BlockRenderer's recency signal (isLastAssistant / lastActivityAtS)", async () => {
+    installSnapshotApi([]);
+    const codeItem = {
+      kind: "text" as const,
+      itemId: ORIGIN.itemId,
+      text: "```ts\nconst answer = 42;\n```",
+      final: true,
+    };
+
+    // Old history: not the last assistant bubble, and its newest item is
+    // long past the recency window. No spinner, no poll.
+    render(
+      <TestQueryProvider>
+        <BlockRenderer
+          items={[codeItem]}
+          sessionStatus="idle"
+          isLastAssistant={false}
+          lastActivityAtS={Date.now() / 1000 - 3600}
+          snapshotConversationId={ORIGIN.conversationId}
+          snapshotResponseId={ORIGIN.responseId}
+          canEditSnapshots
+          snapshotsStable
+        />
+      </TestQueryProvider>,
+    );
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-streamdown="code-block-body"]')).not.toBeNull(),
+    );
+    await waitFor(() => expect(vi.mocked(authenticatedFetch).mock.calls.length).toBeGreaterThan(0));
+    expect(screen.queryByTestId("auto-card-pending-indicator")).toBeNull();
+
+    cleanup();
+    vi.clearAllMocks();
+    installSnapshotApi([]);
+
+    // The latest assistant bubble: pending indicator shows and polls, even
+    // with no explicit lastActivityAtS.
+    render(
+      <TestQueryProvider>
+        <BlockRenderer
+          items={[codeItem]}
+          sessionStatus="idle"
+          isLastAssistant
+          snapshotConversationId={ORIGIN.conversationId}
+          snapshotResponseId={ORIGIN.responseId}
+          canEditSnapshots
+          snapshotsStable
+        />
+      </TestQueryProvider>,
+    );
+
+    expect(await screen.findByTestId("auto-card-pending-indicator")).toBeVisible();
   });
 
   it("captures a desktop region, cancels with Escape, and reveals a separate gallery count", async () => {
@@ -676,6 +735,46 @@ describe("code snapshots", () => {
       timeout: 5000,
     });
 
+    fireEvent.pointerDown(codeBody!, { clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(codeBody!, { clientX: 50, clientY: 50 });
+    expect(await screen.findByTestId("snapshot-viewer")).toBeVisible();
+  }, 10000);
+
+  it("does not show or poll for a pending indicator on a historical (not-recent) code block", async () => {
+    installSnapshotApi([]);
+    renderCodeBlock(true, undefined, false);
+
+    // The block's own one-shot snapshot query (no refetchInterval) still
+    // fires once to learn there are no snapshots — but the pending
+    // indicator must never appear, and no repeated polling may follow.
+    await waitFor(() => expect(vi.mocked(authenticatedFetch).mock.calls.length).toBeGreaterThan(0));
+    expect(screen.queryByTestId("auto-card-pending-indicator")).toBeNull();
+
+    const callCountAfterInitialFetch = vi.mocked(authenticatedFetch).mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    expect(screen.queryByTestId("auto-card-pending-indicator")).toBeNull();
+    expect(vi.mocked(authenticatedFetch).mock.calls.length).toBe(callCountAfterInitialFetch);
+
+    const codeBody = document.querySelector('[data-streamdown="code-block-body"]');
+    expect(codeBody).not.toBeNull();
+    fireEvent.pointerDown(codeBody!, { clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(codeBody!, { clientX: 50, clientY: 50 });
+    expect(screen.queryByTestId("snapshot-viewer")).toBeNull();
+  });
+
+  it("still shows and polls the pending indicator for a just-completed (recency-eligible) code block", async () => {
+    const { stored } = installSnapshotApi([]);
+    renderCodeBlock(true, undefined, true);
+
+    await screen.findByTestId("auto-card-pending-indicator");
+    stored.push(snapshot("first"));
+
+    await waitFor(() => expect(screen.queryByTestId("auto-card-pending-indicator")).toBeNull(), {
+      timeout: 5000,
+    });
+
+    const codeBody = document.querySelector('[data-streamdown="code-block-body"]');
+    expect(codeBody).not.toBeNull();
     fireEvent.pointerDown(codeBody!, { clientX: 50, clientY: 50 });
     fireEvent.pointerUp(codeBody!, { clientX: 50, clientY: 50 });
     expect(await screen.findByTestId("snapshot-viewer")).toBeVisible();

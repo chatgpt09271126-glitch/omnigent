@@ -73,6 +73,13 @@ const FOLD_SETTLE_DEBOUNCE_MS = 500;
 const RECENT_ACTIVITY_WINDOW_S = 15;
 const FOLD_RECENT_MOUNT_DEBOUNCE_MS = 3_000;
 
+// How long after a message's newest item lands the auto-card "generating"
+// indicator stays eligible to show (and poll) for that message's code
+// blocks. Wider than RECENT_ACTIVITY_WINDOW_S because auto-card generation
+// itself can take a few seconds after the turn settles (see
+// AUTO_CARD_POLL_INTERVAL_MS / AUTO_CARD_POLL_MAX_ATTEMPTS in message.tsx).
+const AUTO_CARD_PENDING_RECENCY_WINDOW_S = 30;
+
 // How long a user-initiated fold expand parks the scroller's scroll
 // anchoring. Covers the 200ms `turn-fold-expand` height animation (see
 // index.css) with slack — anchoring would otherwise pin the answer
@@ -134,6 +141,13 @@ interface SnapshotRenderContextValue {
   responseId: string;
   canEdit: boolean;
   stable: boolean;
+  /**
+   * Whether this bubble is recent enough (or is the latest assistant
+   * bubble) that an auto-card "generating" indicator should still be
+   * eligible to show/poll for its code blocks. See
+   * `AUTO_CARD_PENDING_RECENCY_WINDOW_S`.
+   */
+  pendingEligible: boolean;
 }
 
 const SnapshotRenderContext = createContext<SnapshotRenderContextValue | null>(null);
@@ -147,6 +161,7 @@ function AssistantMarkdownText({ item }: { item: Extract<RenderItem, { kind: "te
           responseId: snapshotContext.responseId,
           itemId: item.itemId,
           canEdit: snapshotContext.canEdit,
+          pendingEligible: snapshotContext.pendingEligible,
         }
       : null;
   return (
@@ -358,6 +373,16 @@ export function BlockRenderer({
     else if (showFold) foldLatchedRef.current = true;
   });
 
+  // A code block is only worth showing a "generating" spinner for when the
+  // message that owns it is either the newest assistant message or landed
+  // recently — otherwise auto-card generation (if it was ever going to
+  // happen) is long done, and a stale spinner would poll forever for
+  // nothing. Scrolling through old history must never show this indicator.
+  const pendingEligible =
+    isLastAssistant ||
+    (lastActivityAtS !== undefined &&
+      Date.now() / 1000 - lastActivityAtS < AUTO_CARD_PENDING_RECENCY_WINDOW_S);
+
   const snapshotContext = useMemo(
     () =>
       snapshotConversationId && snapshotResponseId
@@ -366,9 +391,16 @@ export function BlockRenderer({
             responseId: snapshotResponseId,
             canEdit: canEditSnapshots,
             stable: snapshotsStable,
+            pendingEligible,
           }
         : null,
-    [canEditSnapshots, snapshotConversationId, snapshotResponseId, snapshotsStable],
+    [
+      canEditSnapshots,
+      snapshotConversationId,
+      snapshotResponseId,
+      snapshotsStable,
+      pendingEligible,
+    ],
   );
 
   if (showFold) {
