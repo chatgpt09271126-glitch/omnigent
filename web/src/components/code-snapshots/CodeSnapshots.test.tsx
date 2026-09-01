@@ -740,6 +740,27 @@ describe("code snapshots", () => {
     expect(await screen.findByTestId("snapshot-viewer")).toBeVisible();
   }, 10000);
 
+  it("keeps polling after the first auto card arrives and picks up a second one", async () => {
+    // Backend persists pages one at a time, so a first snapshot landing
+    // doesn't mean a second page isn't still on its way. The indicator
+    // should clear once card 1 exists, but polling must continue quietly
+    // in the background so card 2 is picked up without a page reload.
+    const { stored } = installSnapshotApi([snapshot("first")]);
+    renderCodeBlock();
+
+    await waitFor(() => expect(screen.queryByTestId("auto-card-pending-indicator")).toBeNull());
+
+    stored.push(snapshot("second"));
+
+    // AutoCardViewer's dialog content isn't mounted while closed (we never
+    // tap to open it here), so assert on the toolbar button instead — both
+    // read the same live query cache, so this equally proves the fix.
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "Open 2 code snapshots" })).toBeInTheDocument(),
+      { timeout: 5000 },
+    );
+  }, 10000);
+
   it("does not show or poll for a pending indicator on a historical (not-recent) code block", async () => {
     installSnapshotApi([]);
     renderCodeBlock(true, undefined, false);

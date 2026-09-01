@@ -558,23 +558,28 @@ function useAutoCardPending(
   pendingEligible: boolean,
 ): boolean {
   const [attempts, setAttempts] = useState(0);
+  // Pages persist one at a time on the backend, so a first snapshot landing
+  // doesn't mean later pages are done — keep polling for the full attempt
+  // budget regardless of hasSnapshots; only the visible pending indicator
+  // (the return value) drops as soon as the first card exists.
+  const keepPolling = pendingEligible && attempts < AUTO_CARD_POLL_MAX_ATTEMPTS;
   const stillWaiting = pendingEligible && !hasSnapshots && attempts < AUTO_CARD_POLL_MAX_ATTEMPTS;
 
   const query = useQuery({
     queryKey: codeSnapshotsQueryKey(origin),
     queryFn: () => fetchCodeSnapshots(origin),
-    enabled: stillWaiting,
-    refetchInterval: stillWaiting ? AUTO_CARD_POLL_INTERVAL_MS : false,
+    enabled: keepPolling,
+    refetchInterval: keepPolling ? AUTO_CARD_POLL_INTERVAL_MS : false,
   });
 
   useEffect(() => {
-    if (!stillWaiting) return;
+    if (!keepPolling) return;
     // Count a successful fetch (dataUpdatedAt changes) or a failed one
     // (errorUpdatedAt changes) as one attempt, so a repeatedly erroring
     // fetch still exhausts the budget instead of polling forever.
     if (query.dataUpdatedAt === 0 && query.errorUpdatedAt === 0) return;
     setAttempts((a) => a + 1);
-  }, [query.dataUpdatedAt, query.errorUpdatedAt, stillWaiting]);
+  }, [query.dataUpdatedAt, query.errorUpdatedAt, keepPolling]);
 
   // Reset the attempt budget if the underlying block changes identity.
   useEffect(() => {
