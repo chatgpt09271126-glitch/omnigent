@@ -34,8 +34,11 @@ _CARD_WIDTH_PX = 1000
 _LINE_HEIGHT_PX = 28
 _VERTICAL_PADDING_PX = 48
 
-# Close to a VS-Code-dark palette; one of Pygments' built-in styles.
-_PYGMENTS_STYLE = "one-dark"
+# Matches the in-app chat's own code-block theme (Shiki's "github-dark",
+# see web/src/components/ai-elements/lazyCodePlugin.ts) so a code card looks
+# like the same surface the candidate already reads code in, not a
+# different-looking screenshot.
+_PYGMENTS_STYLE = "github-dark"
 
 _formatter = HtmlFormatter(style=_PYGMENTS_STYLE, noclasses=False, cssclass="highlight")
 
